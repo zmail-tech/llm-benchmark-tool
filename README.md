@@ -6,6 +6,7 @@ A Python script for benchmarking local LLMs running on OpenAI-compatible endpoin
 
 - **Multi-model benchmarking** — test multiple models back-to-back and get a ranked comparison
 - **Evaluation mode** — evaluate saved benchmark results with a separate eval model and a customizable scoring prompt
+- **HTML comparison graph** — generate an interactive Chart.js bar chart from eval results, with per-model averages and per-question breakdowns
 - Per-question metrics: duration, prompt/response tokens per second, thinking tokens, response tokens, and completion tokens
 - Each question/response saved as a separate JSON file per model
 - Aggregate summary per model + cross-model comparison file
@@ -139,6 +140,26 @@ results/
     eval-summary.json
 ```
 
+## HTML Comparison Graph
+
+After running evaluation, generate an interactive HTML comparison chart that visualizes per-model average scores across all evaluation criteria:
+
+```bash
+# Generate graph with default output path
+python benchmark.py --graph
+
+# Generate graph with custom output path
+python benchmark.py --graph --graph-output my-graph.html
+```
+
+The graph is a self-contained HTML file using Chart.js (loaded via CDN). It includes:
+
+- **Grouped bar chart** — average scores per model across all criteria (Accuracy, Completeness, Clarity, Reasoning, Speed, Refusal, Overall)
+- **Summary table** — numeric averages for each model and criterion
+- **Collapsible per-question breakdown** — individual scores for each question, organized by model
+
+The default output path is `results/eval/comparison-graph.html`.
+
 ## Usage
 
 ### Single Model (CLI override)
@@ -184,7 +205,7 @@ python benchmark.py -q questions.txt -c /path/to/other.ini
 python benchmark.py -q questions.txt -o my_results
 ```
 
-### Full Workflow: Benchmark Then Evaluate
+### Full Workflow: Benchmark, Evaluate, and Visualize
 
 ```bash
 # Step 1: Run a benchmark against multiple models
@@ -192,6 +213,9 @@ python benchmark.py -q questions.txt
 
 # Step 2: Evaluate all saved results
 python benchmark.py --eval
+
+# Step 3: Generate interactive comparison graph
+python benchmark.py --graph
 ```
 
 ## CLI Reference
@@ -208,6 +232,8 @@ python benchmark.py --eval
 | `--eval` | `-e` | Evaluate saved results using the eval model |
 | `--eval-prompt` | | Path to eval prompt template (default: `eval-prompt.txt`) |
 | `--eval-dir` | | Directory with result files to evaluate (default: `results/`) |
+| `--graph` | `-g` | Generate HTML comparison graph from eval results |
+| `--graph-output` | | Output path for graph HTML (default: `results/eval/comparison-graph.html`) |
 
 ## Output
 
@@ -226,9 +252,15 @@ results/
     q002_My_8_year_old_keeps_asking.json
     summary.json
   eval/
-    eval_q001_Whats_a_good_simple_dinner_recipe.json
-    eval_q002_My_8_year_old_keeps_asking.json
-    eval-summary.json
+    Qwen-Lite-Deepseek/
+      eval_q001_Whats_a_good_simple_dinner_recipe.json
+      eval_q002_My_8_year_old_keeps_asking.json
+      eval-summary.json
+    DeepSeek-R1/
+      eval_q001_Whats_a_good_simple_dinner_recipe.json
+      eval_q002_My_8_year_old_keeps_asking.json
+      eval-summary.json
+    comparison-graph.html
   comparison.json
 ```
 
