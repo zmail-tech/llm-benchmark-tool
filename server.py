@@ -69,12 +69,13 @@ def _run_benchmark_bg(output_dir, questions, model_names):
                 "api_key": llm_api_key,
             }]
 
-        _write_progress("benchmark", 0, len(questions) * len(models_to_test))
-        # Create run
-        run_id = dbmod.create_run(conn, output_dir, len(questions), len(models_to_test))
-
         # Resolve models with inheritance
         resolved_models = [_resolve_model(m, llm_url, llm_api_key) for m in models_to_test]
+        total_steps = len(questions) * len(resolved_models)
+
+        _write_progress("benchmark", 0, total_steps)
+        # Create run
+        run_id = dbmod.create_run(conn, output_dir, len(questions), len(models_to_test))
 
         model_summaries = []
         q_idx = 0
@@ -85,7 +86,7 @@ def _run_benchmark_bg(output_dir, questions, model_names):
 
             for question in questions:
                 q_idx += 1
-                _write_progress("benchmark", q_idx, len(questions))
+                _write_progress("benchmark", q_idx, total_steps)
 
                 client = bm.OpenAI(base_url=model["base_url"], api_key=model["api_key"])
                 result = bm.run_question(client, model["model_id"], question)
@@ -508,6 +509,46 @@ def export_run(run_id):
             "results": results,
             "summaries": summaries,
             "comparison": comparison,
+        })
+    finally:
+        conn.close()
+
+
+@app.route("/api/models", methods=["POST"])
+def add_model_api():
+    """Add a new model."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "Model name is required"}), 400
+
+    model_id_val = data.get("model_id", name)
+    base_url = data.get("base_url") or None
+    api_key = data.get("api_key") or None
+
+    conn = dbmod.get_db()
+    try:
+        existing = dbmod.get_model_by_name(conn, name)
+        if existing:
+            return jsonify({"error": f"Model '{name}' already exists"}), 409
+
+        dbmod.add_model(conn, name, model_id_val, base_url, api_key)
+        conn.commit()
+
+        # Return the newly created model with its DB ID
+        new_model = dbmod.get_model_by_name(conn, name)
+        return jsonify({
+            "ok": True,
+            "model": {
+                "id": new_model["id"],
+                "name": new_model["name"],
+                "model_id": new_model["model_id"],
+                "base_url": new_model["base_url"],
+                "api_key_set": bool(new_model["api_key"] and new_model["api_key"] != bm.DEFAULT_API_KEY),
+            }
         })
     finally:
         conn.close()

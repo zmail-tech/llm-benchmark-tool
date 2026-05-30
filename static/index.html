@@ -262,20 +262,31 @@ function showAddModel() {
 function addModel() {
   const name = document.getElementById('am-name').value.trim();
   if (!name) return;
-  if (!configData) return;
-  configData.models.push({
-    id: Date.now(),
+
+  const body = {
     name: name,
     model_id: document.getElementById('am-model-id').value.trim() || name,
     base_url: document.getElementById('am-base-url').value.trim() || null,
-    api_key_set: !!document.getElementById('am-api-key').value.trim()
-  });
+  };
+  const apiKey = document.getElementById('am-api-key').value.trim();
+  if (apiKey) body.api_key = apiKey;
+
   document.getElementById('am-name').value = '';
   document.getElementById('am-model-id').value = '';
   document.getElementById('am-base-url').value = '';
   document.getElementById('am-api-key').value = '';
-  renderModels(configData.models);
-  updateRunModelSelect(configData.models);
+
+  fetch('/api/models', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(r => r.json()).then(d => {
+    if (d.error) {
+      alert('Error: ' + d.error);
+      return;
+    }
+    loadConfig();
+  });
 }
 
 function deleteModel(id) {
