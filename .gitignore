@@ -1,0 +1,4 @@
+config.ini
+results/
+__pycache__/
+*.pyc
