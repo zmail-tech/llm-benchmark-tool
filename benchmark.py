@@ -11,6 +11,7 @@ import argparse
 import configparser
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -554,29 +555,233 @@ def run_evaluation(
         print(f"  Total eval duration: {total_duration:.3f}s")
 
 
+EVAL_CRITERIA = ["Accuracy", "Completeness", "Clarity", "Reasoning", "Speed", "Refusal", "Overall"]
+
+def parse_eval_scores(evaluation_text: str) -> dict[str, float] | None:
+    """Extract numeric scores for each evaluation criterion from evaluation text.
+
+    Returns a dict like {"Accuracy": 10, "Completeness": 9.5, ...} or None if
+    no recognizable scores are found.
+    """
+    if not evaluation_text or evaluation_text.startswith("ERROR:"):
+        return None
+
+    scores: dict[str, float] = {}
+    for criterion in EVAL_CRITERIA:
+        match = re.search(
+            rf'(?:[-•]\s*|\s)\**{criterion}:\s*(\d+\.?\d*)/?\d*\**',
+            evaluation_text,
+        )
+        if match:
+            try:
+                scores[criterion] = float(match.group(1))
+            except ValueError:
+                pass
+
+    return scores if scores else None
+
+def _html_escape(text: str) -> str:
+    """Basic HTML escaping for safe embedding in generated HTML."""
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+def generate_comparison_graph(eval_dir: str, output_path: str) -> dict:
+    """Generate an HTML comparison chart from evaluation summary JSONs.
+
+    Reads all eval-summary.json files from the eval subdirectories, parses
+    per-question scores, computes per-model averages, and writes a self-contained
+    Chart.js HTML file.
+
+    Returns a summary dict with model averages for terminal display.
+    """
+    if not os.path.isdir(eval_dir):
+        print(f"Error: Eval directory not found: {eval_dir}")
+        sys.exit(1)
+
+    # Collect per-model data
+    # model_data[model_name] = list of (scores_dict, question)
+    model_data: dict[str, list[tuple[dict[str, float], str]]] = {}
+
+    for entry in sorted(os.listdir(eval_dir)):
+        summary_path = os.path.join(eval_dir, entry, "eval-summary.json")
+        if not os.path.isfile(summary_path):
+            continue
+
+        try:
+            with open(summary_path, "r", encoding="utf-8") as f:
+                summary = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            print(f"  Warning: could not read {summary_path}, skipping")
+            continue
+
+        evaluations = summary.get("evaluations", [])
+        for ev in evaluations:
+            eval_text = ev.get("evaluation", "")
+            scores = parse_eval_scores(eval_text)
+            question = ev.get("question", "Unknown")
+            if scores:
+                model_data.setdefault(entry, []).append((scores, question))
+            else:
+                print(f"  Warning: could not parse scores for question in {entry}: {question[:60]}")
+
+    if not model_data:
+        print("Error: No evaluatable data found in the eval directory.")
+        sys.exit(1)
+
+    # Compute averages per model per criterion
+    model_names = sorted(model_data.keys())
+    model_averages: dict[str, dict[str, float]] = {}
+    for mname in model_names:
+        entries = model_data[mname]
+        totals: dict[str, list[float]] = {c: [] for c in EVAL_CRITERIA}
+        for scores, _ in entries:
+            for c in EVAL_CRITERIA:
+                if c in scores:
+                    totals[c].append(scores[c])
+        model_averages[mname] = {c: (sum(v) / len(v)) if v else 0 for c, v in totals.items()}
+
+    # Build Chart.js datasets with distinct colors
+    COLORS = [
+        "#4e79a7", "#f28e2b", "#e15759", "#76b7b2",
+        "#59a14f", "#edc948", "#b07aa1", "#ff9da7",
+        "#9c755f", "#bab0ac", "#8c564b", "#c44e52",
+    ]
+
+    datasets_json: list[str] = []
+    for idx, mname in enumerate(model_names):
+        color = COLORS[idx % len(COLORS)]
+        values = [model_averages[mname].get(c, 0) for c in EVAL_CRITERIA]
+        datasets_json.append(
+            f"{{ label: {_html_escape(mname)}, backgroundColor: '{color}', "
+            f"data: {values} }}"
+        )
+
+    # Build per-question collapsible details
+    details_html: list[str] = []
+    for mname in model_names:
+        entries = model_data[mname]
+        details_html.append(
+            f"<details style='margin: 0.5em 0;'><summary><strong>"
+            f"{_html_escape(mname)}</strong> — "
+            f"{len(entries)} questions</summary>"
+        )
+        details_html.append(
+            "<table border='1' cellpadding='4' cellspacing='0' "
+            "style='border-collapse:collapse; font-size:0.85em;'>"
+        )
+        # Header row
+        details_html.append("<tr>")
+        details_html.append("<th>Question</th>")
+        for c in EVAL_CRITERIA:
+            details_html.append(f"<th>{c}</th>")
+        details_html.append("</tr>")
+
+        for scores, question in entries:
+            details_html.append("<tr>")
+            details_html.append(f"<td>{_html_escape(question[:100])}</td>")
+            for c in EVAL_CRITERIA:
+                val = scores.get(c, "—")
+                details_html.append(f"<td>{val}</td>")
+            details_html.append("</tr>")
+
+        details_html.append("</table></details>")
+
+    # Generate HTML
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Eval Score Comparison</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         margin: 2em; background: #fafafa; color: #222; }}
+  h1 {{ border-bottom: 2px solid #4e79a7; padding-bottom: 0.3em; }}
+  canvas {{ max-width: 900px; }}
+  details summary {{ cursor: pointer; }}
+</style>
+</head>
+<body>
+<h1>Eval Score Comparison</h1>
+<p>Generated from eval results in <code>{_html_escape(eval_dir)}</code></p>
+<canvas id="chart"></canvas>
+<h2>Average Scores by Model</h2>
+<table border="1" cellpadding="4" cellspacing="0"
+       style="border-collapse:collapse;">
+<tr><th>Model</th>{"".join(f"<th>{c}</th>" for c in EVAL_CRITERIA)}</tr>
+{"".join(
+    f"<tr><td>{_html_escape(m)}</td>" +
+    "".join(f"<td>{model_averages[m].get(c, 0):.1f}</td>" for c in EVAL_CRITERIA) +
+    "</tr>"
+    for m in model_names
+)}
+</table>
+<h2>Per-Question Breakdown</h2>
+{"".join(details_html)}
+<script>
+const ctx = document.getElementById("chart").getContext("2d");
+new Chart(ctx, {{
+  type: "bar",
+  data: {{
+    labels: {EVAL_CRITERIA},
+    datasets: [{"".join(datasets_json)}],
+  }},
+  options: {{
+    responsive: true,
+    scales: {{
+      y: {{ beginAtZero: true, max: 10, ticks: {{ stepSize: 1 }} }},
+    }},
+    plugins: {{
+      title: {{ display: true, text: "Average Scores Across Models" }},
+      legend: {{ position: "top" }},
+    }},
+  }},
+}});
+</script>
+</body>
+</html>"""
+
+    # Write output
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    return {"model_averages": model_averages, "model_names": model_names, "output": output_path}
+
 def main():
     config_path_arg = None
 
     parser = argparse.ArgumentParser(
         description="Benchmark local LLMs on OpenAI-compatible endpoints.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-       epilog="""\
- Examples:
-   # Use models from config.ini [models] section
-   python benchmark.py --questions questions.txt
+        epilog="""\
+  Examples:
+    # Use models from config.ini [models] section
+    python benchmark.py --questions questions.txt
 
-   # Test a single model directly
-   python benchmark.py --prompt "What is 2+2?" --model qwen3-8b
+    # Test a single model directly
+    python benchmark.py --prompt "What is 2+2?" --model qwen3-8b
 
-   # Override config with CLI flags
-   python benchmark.py --prompt "Hello" -m my-model -u http://localhost:8080/v1
+    # Override config with CLI flags
+    python benchmark.py --prompt "Hello" -m my-model -u http://localhost:8080/v1
 
-   # Evaluate saved results (requires [eval] in config.ini)
-   python benchmark.py --eval
+    # Evaluate saved results (requires [eval] in config.ini)
+    python benchmark.py --eval
 
-   # Evaluate with a custom prompt template
-   python benchmark.py --eval --eval-prompt custom-eval-prompt.txt
-         """,
+    # Evaluate with a custom prompt template
+    python benchmark.py --eval --eval-prompt custom-eval-prompt.txt
+
+    # Generate HTML comparison graph from eval results
+    python benchmark.py --graph
+
+    # Graph with custom output path
+    python benchmark.py --graph --graph-output my-graph.html
+          """,
     )
 
     parser.add_argument("--prompt", "-p", type=str, help="A single question to ask the model")
@@ -590,6 +795,8 @@ def main():
     parser.add_argument("--eval", "-e", action="store_true", help="Evaluate saved results using the evaluation model")
     parser.add_argument("--eval-prompt", type=str, default=None, help=f"Path to eval prompt template (default: {DEFAULT_EVAL_PROMPT_FILE})")
     parser.add_argument("--eval-dir", type=str, default=None, help="Directory containing result files to evaluate (default: results/)")
+    parser.add_argument("--graph", "-g", action="store_true", help="Generate HTML comparison graph from eval results")
+    parser.add_argument("--graph-output", type=str, default=None, help="Output path for graph HTML (default: results/eval/comparison-graph.html)")
 
     args = parser.parse_args()
 
@@ -648,6 +855,32 @@ def main():
 
         print(f"\n{'='*60}")
         print("Evaluation complete.")
+        return
+
+    # Handle standalone graph generation mode
+    if args.graph:
+        eval_base_dir = os.path.join(args.output_dir, "eval")
+        graph_output = args.graph_output or os.path.join(eval_base_dir, "comparison-graph.html")
+
+        res = generate_comparison_graph(eval_base_dir, graph_output)
+
+        model_avgs = res["model_averages"]
+        print(f"\n{'='*60}")
+        print("EVAL SCORE COMPARISON")
+        print(f"{'='*60}")
+
+        # Print summary table
+        header = f"  {'Model':<25}" + "".join(f"{c:>8}" for c in EVAL_CRITERIA)
+        print(header)
+        print("  " + "-" * (25 + 8 * len(EVAL_CRITERIA)))
+        for mname in res["model_names"]:
+            row = f"  {_html_escape(mname):<25}" + "".join(
+                f"{model_avgs[mname].get(c, 0):>8.1f}" for c in EVAL_CRITERIA
+            )
+            print(row)
+
+        print(f"\n  Graph saved: {graph_output}")
+        print(f"  Open in browser to see interactive chart.")
         return
 
     # Benchmark mode (requires --prompt or --questions)
