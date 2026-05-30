@@ -10,3 +10,8 @@ model-id = Qwen-Lite-Deepseek
 
 [model.DeepSeek-R1]
 model-id = DeepSeek-R1
+
+[eval]
+url = http://localhost:8000/v1
+api-key = your-api-key
+model-id = qwen3-32b

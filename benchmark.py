@@ -27,6 +27,8 @@ DEFAULT_OUTPUT_DIR = "results"
 DEFAULT_API_KEY = "none"
 
 CONFIG_FILENAME = "config.ini"
+DEFAULT_EVAL_PROMPT_FILE = "eval-prompt.txt"
+DEFAULT_EVAL_MODEL = "eval-model"
 
 
 def load_config(path: str | None = None) -> dict:
@@ -94,6 +96,34 @@ def load_models(config_path: str | None = None) -> list[dict]:
         models.append(entry)
 
     return models
+
+
+def load_eval_config(config_path: str | None = None) -> dict:
+    """Load evaluation model settings from config.ini [eval] section."""
+    cfg_path = config_path or CONFIG_FILENAME
+    if not os.path.isfile(cfg_path):
+        return {}
+
+    config = configparser.ConfigParser()
+    config.read(cfg_path, encoding="utf-8")
+
+    settings: dict = {}
+    if config.has_section("eval"):
+        settings["base_url"] = config["eval"].get("url", "").strip()
+        settings["api_key"] = config["eval"].get("api-key", "").strip()
+        settings["model_id"] = config["eval"].get("model-id", "").strip()
+
+    return settings
+
+
+def load_eval_prompt(path: str) -> str:
+    """Load the evaluation prompt template from a file.
+
+    The template may contain {question} and {answer} placeholders that will be
+    replaced with the actual question and answer during evaluation.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
 
 
 def load_questions(path: str) -> list[str]:
@@ -380,23 +410,173 @@ def run_model_benchmark(
     return None
 
 
+def run_evaluation(
+    eval_model: dict,
+    result_files: list[str],
+    eval_prompt_template: str,
+    output_dir: str,
+) -> None:
+    """Evaluate previously saved benchmark results using an evaluation model.
+
+    Each result file is read, the evaluation prompt is populated with the
+    question and answer, and the eval model is queried for an assessment.
+    """
+    client = OpenAI(base_url=eval_model["base_url"], api_key=eval_model["api_key"])
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print(f"EVALUATION")
+    print(f"Eval model: {eval_model['name']} ({eval_model['model_id']})")
+    print(f"Eval URL:   {eval_model['base_url']}")
+    print(f"Results:    {len(result_files)} files")
+    print(f"Out:        {output_dir}/")
+    print(f"{'='*60}")
+
+    evaluations: list[dict] = []
+
+    for idx, filepath in enumerate(result_files, start=1):
+        with open(filepath, "r", encoding="utf-8") as f:
+            result = json.load(f)
+
+        question = result.get("question", "")
+        answer = result.get("answer", "")
+        model_id = result.get("model_id", "unknown")
+        metrics = result.get("metrics", {})
+        duration = metrics.get("duration_seconds", 0)
+        response_tokens = metrics.get("response_tokens", 0)
+        response_tps = metrics.get("response_tokens_per_second", 0)
+
+        eval_prompt = eval_prompt_template.format(
+            question=question,
+            answer=answer,
+            duration=duration,
+            response_tokens=response_tokens,
+            response_tps=response_tps,
+        )
+
+        print(f"\n  [{idx}/{len(result_files)}] Evaluating: {question[:80]}...")
+
+        start_time = time.time()
+        try:
+            resp = client.chat.completions.create(
+                model=eval_model["model_id"],
+                messages=[{"role": "user", "content": eval_prompt}],
+                stream=True,
+            )
+
+            eval_parts: list[str] = []
+            for chunk in resp:
+                choice = chunk.choices[0] if chunk.choices else None
+                if choice and choice.delta and choice.delta.content:
+                    eval_parts.append(choice.delta.content)
+
+            evaluation_text = "".join(eval_parts)
+            duration = time.time() - start_time
+
+            preview = evaluation_text[:120] + ("..." if len(evaluation_text) > 120 else "")
+            print(f"    Preview: {preview}")
+            print(f"    Duration: {duration:.3f}s")
+
+            eval_entry = {
+                "model_id": model_id,
+                "question": question,
+                "answer": answer,
+                "metrics": {
+                    "duration_seconds": duration,
+                    "response_tokens": response_tokens,
+                    "response_tokens_per_second": response_tps,
+                },
+                "evaluation": evaluation_text,
+                "eval_duration_seconds": round(time.time() - start_time, 3),
+                "source_file": filepath,
+                "timestamp": datetime.now().isoformat(),
+            }
+
+        except Exception as e:
+            duration = time.time() - start_time
+            eval_entry = {
+                "model_id": model_id,
+                "question": question,
+                "answer": answer,
+                "metrics": {
+                    "duration_seconds": duration,
+                    "response_tokens": response_tokens,
+                    "response_tokens_per_second": response_tps,
+                },
+                "evaluation": f"ERROR: {e}",
+                "eval_duration_seconds": round(time.time() - start_time, 3),
+                "source_file": filepath,
+                "timestamp": datetime.now().isoformat(),
+                "error": str(e),
+            }
+
+        evaluations.append(eval_entry)
+
+        # Save individual evaluation
+        safe_name = sanitize_name(question)
+        eval_filename = f"eval_q{idx:03d}_{safe_name}.json"
+        eval_filepath = os.path.join(output_dir, eval_filename)
+        with open(eval_filepath, "w", encoding="utf-8") as f:
+            json.dump(eval_entry, f, indent=2, ensure_ascii=False)
+        print(f"    Saved: {eval_filepath}")
+
+    # Save evaluation summary
+    if evaluations:
+        total_duration = sum(e["eval_duration_seconds"] for e in evaluations)
+        summary = {
+            "eval_model": eval_model["name"],
+            "eval_model_id": eval_model["model_id"],
+            "total_evaluations": len(evaluations),
+            "aggregate_metrics": {
+                "total_duration_seconds": round(total_duration, 3),
+                "avg_duration_seconds": round(total_duration / len(evaluations), 3),
+            },
+            "evaluations": [
+                {
+                    "model_id": e["model_id"],
+                    "question": e["question"],
+                    "evaluation": e["evaluation"],
+                    "metrics": e.get("metrics"),
+                    "duration_seconds": e["eval_duration_seconds"],
+                }
+                for e in evaluations
+            ],
+            "individual_files": [e["source_file"] for e in evaluations],
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        summary_path = os.path.join(output_dir, "eval-summary.json")
+        with open(summary_path, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2, ensure_ascii=False)
+
+        print(f"\n  Eval summary saved: {summary_path}")
+        print(f"  Total eval duration: {total_duration:.3f}s")
+
+
 def main():
     config_path_arg = None
 
     parser = argparse.ArgumentParser(
         description="Benchmark local LLMs on OpenAI-compatible endpoints.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""\
-Examples:
-  # Use models from config.ini [models] section
-  python benchmark.py --questions questions.txt
+       epilog="""\
+ Examples:
+   # Use models from config.ini [models] section
+   python benchmark.py --questions questions.txt
 
-  # Test a single model directly
-  python benchmark.py --prompt "What is 2+2?" --model qwen3-8b
+   # Test a single model directly
+   python benchmark.py --prompt "What is 2+2?" --model qwen3-8b
 
-  # Override config with CLI flags
-  python benchmark.py --prompt "Hello" -m my-model -u http://localhost:8080/v1
-        """,
+   # Override config with CLI flags
+   python benchmark.py --prompt "Hello" -m my-model -u http://localhost:8080/v1
+
+   # Evaluate saved results (requires [eval] in config.ini)
+   python benchmark.py --eval
+
+   # Evaluate with a custom prompt template
+   python benchmark.py --eval --eval-prompt custom-eval-prompt.txt
+         """,
     )
 
     parser.add_argument("--prompt", "-p", type=str, help="A single question to ask the model")
@@ -407,6 +587,9 @@ Examples:
     parser.add_argument("--output-dir", "-o", type=str, default=DEFAULT_OUTPUT_DIR,
                         help=f"Directory to save result files (default: {DEFAULT_OUTPUT_DIR})")
     parser.add_argument("--config", "-c", type=str, default=None, help=f"Path to config file (default: {CONFIG_FILENAME})")
+    parser.add_argument("--eval", "-e", action="store_true", help="Evaluate saved results using the evaluation model")
+    parser.add_argument("--eval-prompt", type=str, default=None, help=f"Path to eval prompt template (default: {DEFAULT_EVAL_PROMPT_FILE})")
+    parser.add_argument("--eval-dir", type=str, default=None, help="Directory containing result files to evaluate (default: results/)")
 
     args = parser.parse_args()
 
@@ -414,13 +597,65 @@ Examples:
         config_path_arg = args.config
 
     config = load_config(config_path_arg)
+
+    # Handle standalone evaluation mode
+    if args.eval:
+        eval_config = load_eval_config(config_path_arg)
+        eval_prompt_path = args.eval_prompt or DEFAULT_EVAL_PROMPT_FILE
+
+        if not os.path.isfile(eval_prompt_path):
+            print(f"Error: Eval prompt file not found: {eval_prompt_path}")
+            print("Create an eval-prompt.txt with {question} and {answer} placeholders.")
+            sys.exit(1)
+
+        eval_prompt_template = load_eval_prompt(eval_prompt_path)
+
+        eval_model_id = eval_config.get("model_id", DEFAULT_EVAL_MODEL)
+        eval_model = {
+            "name": eval_model_id,
+            "model_id": eval_model_id,
+            "base_url": eval_config.get("base_url", DEFAULT_BASE_URL),
+            "api_key": eval_config.get("api_key", DEFAULT_API_KEY),
+        }
+
+        eval_dir = args.eval_dir or DEFAULT_OUTPUT_DIR
+        if not os.path.isdir(eval_dir):
+            print(f"Error: Eval directory not found: {eval_dir}")
+            sys.exit(1)
+
+        # Collect result files grouped by model subdirectory
+        from collections import defaultdict
+        model_files: dict[str, list[str]] = defaultdict(list)
+        for root, dirs, files in os.walk(eval_dir):
+            # Skip the eval output directory itself
+            dirs[:] = [d for d in dirs if d != "eval"]
+            for fname in files:
+                if fname.endswith(".json") and not fname.startswith(("summary", "comparison", "eval")):
+                    # Determine the model subdirectory (immediate child of eval_dir)
+                    rel = os.path.relpath(root, eval_dir)
+                    model_name = rel.split(os.sep)[0]
+                    model_files[model_name].append(os.path.join(root, fname))
+
+        if not model_files:
+            print(f"Error: No result files found in {eval_dir}/")
+            sys.exit(1)
+
+        eval_base_dir = os.path.join(eval_dir, "eval")
+
+        for model_name, files in sorted(model_files.items()):
+            model_eval_dir = os.path.join(eval_base_dir, model_name)
+            run_evaluation(eval_model, files, eval_prompt_template, model_eval_dir)
+
+        print(f"\n{'='*60}")
+        print("Evaluation complete.")
+        return
+
+    # Benchmark mode (requires --prompt or --questions)
     models_from_config = load_models(config_path_arg)
 
-    # Merge: CLI overrides, then config, then defaults
     base_url = args.base_url or config.get("base_url") or DEFAULT_BASE_URL
     api_key = args.api_key or config.get("api_key") or DEFAULT_API_KEY
 
-    # Determine questions
     questions: list[str] = []
     if args.prompt:
         questions = [args.prompt]
@@ -437,14 +672,11 @@ Examples:
         print("Error: No questions to process")
         sys.exit(1)
 
-    # Determine which models to test
     models_to_test: list[dict] = []
 
     if models_from_config:
-        # Use models from config.ini [models] section
         models_to_test = models_from_config
     elif args.model:
-        # Single model from CLI
         models_to_test = [{
             "name": args.model,
             "model_id": args.model,
@@ -452,7 +684,6 @@ Examples:
             "api_key": api_key,
         }]
     else:
-        # Fall back to model from [llm] section
         model_id = config.get("model") or DEFAULT_MODEL
         models_to_test = [{
             "name": model_id,
@@ -467,7 +698,6 @@ Examples:
     print(f"Questions: {len(questions)}")
     print(f"Output:    {args.output_dir}/")
 
-    # Run benchmarks for each model
     model_summaries: list[dict] = []
     for model in models_to_test:
         summary = run_model_benchmark(model, questions, args.output_dir)

@@ -5,6 +5,7 @@ A Python script for benchmarking local LLMs running on OpenAI-compatible endpoin
 ## Features
 
 - **Multi-model benchmarking** — test multiple models back-to-back and get a ranked comparison
+- **Evaluation mode** — evaluate saved benchmark results with a separate eval model and a customizable scoring prompt
 - Per-question metrics: duration, prompt/response tokens per second, thinking tokens, response tokens, and completion tokens
 - Each question/response saved as a separate JSON file per model
 - Aggregate summary per model + cross-model comparison file
@@ -74,6 +75,70 @@ url = http://192.168.1.210:8001/v1
 
 If no `[models]` section is found, the tool falls back to a single model from the `[llm]` section's `model-id`.
 
+## Evaluating Results
+
+After running a benchmark, you can evaluate the saved results using a separate evaluation model. This is useful for quality assessment of model responses using a stronger model as a judge.
+
+### Configuring the Eval Model
+
+Add an `[eval]` section to `config.ini` with the eval model's endpoint and model ID:
+
+```ini
+[eval]
+url = http://192.168.1.210:8000/v1
+api-key = your-api-key
+model-id = qwen3-32b
+```
+
+### Evaluation Prompt Template
+
+The eval prompt is stored in `eval-prompt.txt` and uses `{question}` and `{answer}` placeholders that are replaced with the actual content from each result file. The template also receives response metrics (duration, response tokens, tokens/second) to support speed evaluation.
+
+The default template scores on five dimensions: Accuracy, Completeness, Clarity, Reasoning, and Speed (each 1-10), plus an overall score.
+
+You can create custom evaluation prompts for different tasks. For example, a code-focused eval prompt might score on correctness, style, and efficiency.
+
+```text
+Evaluate the following code answer. Use {question} and {answer} placeholders.
+
+**Question:**
+{question}
+
+**Answer:**
+{answer}
+
+Score: Correctness (1-10), Style (1-10), Efficiency (1-10)
+```
+
+Use `--eval-prompt` to specify a custom template file.
+
+### Running Evaluation
+
+```bash
+# Evaluate saved results using default settings
+python benchmark.py --eval
+
+# Evaluate with a custom prompt template
+python benchmark.py --eval --eval-prompt code-eval-prompt.txt
+
+# Evaluate results from a specific directory
+python benchmark.py --eval --eval-dir my_results/
+```
+
+The eval process reads all result JSON files from the target directory, populates the eval prompt template, sends it to the eval model, and writes results to a subdirectory named `eval/` inside the results folder.
+
+### Eval Output
+
+Each evaluation is saved as an individual JSON file, plus an `eval-summary.json` with all assessments aggregated:
+
+```
+results/
+  eval/
+    eval_q001_Whats_a_good_simple_dinner_recipe.json
+    eval_q002_My_8_year_old_keeps_asking.json
+    eval-summary.json
+```
+
 ## Usage
 
 ### Single Model (CLI override)
@@ -119,6 +184,16 @@ python benchmark.py -q questions.txt -c /path/to/other.ini
 python benchmark.py -q questions.txt -o my_results
 ```
 
+### Full Workflow: Benchmark Then Evaluate
+
+```bash
+# Step 1: Run a benchmark against multiple models
+python benchmark.py -q questions.txt
+
+# Step 2: Evaluate all saved results
+python benchmark.py --eval
+```
+
 ## CLI Reference
 
 | Flag | Short | Description |
@@ -130,6 +205,9 @@ python benchmark.py -q questions.txt -o my_results
 | `--api-key` | `-k` | API key (overrides config.ini) |
 | `--output-dir` | `-o` | Output directory (default: `results/`) |
 | `--config` | `-c` | Path to config file (default: `config.ini`) |
+| `--eval` | `-e` | Evaluate saved results using the eval model |
+| `--eval-prompt` | | Path to eval prompt template (default: `eval-prompt.txt`) |
+| `--eval-dir` | | Directory with result files to evaluate (default: `results/`) |
 
 ## Output
 
@@ -147,6 +225,10 @@ results/
     q001_Whats_a_good_simple_dinner_recipe.json
     q002_My_8_year_old_keeps_asking.json
     summary.json
+  eval/
+    eval_q001_Whats_a_good_simple_dinner_recipe.json
+    eval_q002_My_8_year_old_keeps_asking.json
+    eval-summary.json
   comparison.json
 ```
 
@@ -177,6 +259,10 @@ results/
 ### Cross-Model Comparison
 
 `comparison.json` at the output root contains a ranked comparison of all models tested, ordered by response tokens per second (highest first).
+
+### Eval Summary
+
+`eval-summary.json` inside the `eval/` folder contains all evaluation assessments, including the original response metrics (duration, tokens, tokens/second) and the eval model's scored feedback.
 
 ## Token Counting
 
