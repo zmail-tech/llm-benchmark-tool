@@ -1,4 +1,6 @@
+benchmark.db
 config.ini
 results/
+.release-payload.json
 __pycache__/
 *.pyc

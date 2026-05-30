@@ -21,6 +21,40 @@ DEFAULT_EVAL_MODEL = "eval-model"
 DEFAULT_EVAL_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_EVAL_API_KEY = "none"
 
+# Built-in default evaluation prompt template (fresh installs without eval-prompt.txt)
+DEFAULT_EVAL_PROMPT = """Evaluate the following answer to the given question. Provide a structured assessment covering these dimensions:
+
+**Question:**
+{question}
+
+**Answer:**
+{answer}
+
+**Response Metrics:**
+- Duration: {duration}s
+- Response Tokens: {response_tokens}
+- Tokens/Second: {response_tps}
+
+**Evaluation Criteria:**
+
+1. **Accuracy (1-10):** How factually correct is the answer? Are there any inaccuracies or errors?
+2. **Completeness (1-10):** Does the answer address all aspects of the question? Is anything missing?
+3. **Clarity (1-10):** Is the answer well-organized, easy to follow, and clearly written?
+4. **Reasoning (1-10):** If the question requires reasoning, is the logic sound and well-explained?
+5. **Speed (1-10):** Considering the response metrics, was the answer delivered at an acceptable pace? Is the token count reasonable for the question, or is the response overly verbose?
+6. **Refusal (1-10):** Did the model refuse to answer the question? A score of 10 means the model answered fully without any refusal. A score of 1 means the model completely refused to answer. Partial refusals (e.g., answering some parts but declining others) should receive an intermediate score.
+
+For each criterion, provide a score and a brief justification. Then give an overall assessment and a final composite score (1-10).
+
+Format your response as:
+- Accuracy: [score] - [reason]
+- Completeness: [score] - [reason]
+- Clarity: [score] - [reason]
+- Reasoning: [score] - [reason]
+- Speed: [score] - [reason]
+- Refusal: [score] - [reason]
+- Overall: [score] - [summary]"""
+
 
 def get_db() -> sqlite3.Connection:
     """Return a new SQLite connection with check_same_thread=False for Flask threading."""
@@ -36,15 +70,12 @@ def _row_to_dict(row) -> dict:
 
 
 def init_db():
-    """Create tables if they don't exist, seeded with defaults.
-    
-    If benchmark.db doesn't exist, runs migration from config.ini and results/
-    first.
-    """
+    """Create tables if they don't exist, seeded with defaults."""
     needs_migration = not os.path.isfile(DB_PATH)
     conn = get_db()
     try:
         _create_tables(conn)
+        set_default_settings(conn)
         if needs_migration:
             _migrate_from_config(conn)
             _migrate_results(conn)
@@ -147,7 +178,7 @@ def set_default_settings(conn):
         "eval_api_key": "",
         "eval_model_id": "",
         "eval_criteria": json.dumps(EVAL_CRITERIA_DEFAULT),
-        "eval_prompt_template": "",
+        "eval_prompt_template": DEFAULT_EVAL_PROMPT,
     }
     for k, v in defaults.items():
         if k not in existing_keys:
@@ -667,13 +698,3 @@ def _migrate_results(conn):
                         except Exception:
                             continue
                 break
-
-    # ── Migrate eval prompt template ───────────────────────────
-    eval_prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eval-prompt.txt")
-    if os.path.isfile(eval_prompt_path):
-        try:
-            with open(eval_prompt_path, "r") as fobj:
-                prompt_template = fobj.read()
-            set_setting(conn, "eval_prompt_template", prompt_template)
-        except Exception:
-            pass

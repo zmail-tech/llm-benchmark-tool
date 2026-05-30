@@ -146,13 +146,7 @@ def _run_evaluation_bg():
         eval_prompt_template = dbmod.get_setting(conn, "eval_prompt_template") or ""
 
         if not eval_prompt_template:
-            # Fallback: read from file
-            eval_prompt_path = "eval-prompt.txt"
-            if os.path.isfile(eval_prompt_path):
-                eval_prompt_template = bm.load_eval_prompt(eval_prompt_path)
-            else:
-                _state["evaluation"]["error"] = "Eval prompt not configured"
-                return
+            eval_prompt_template = dbmod.DEFAULT_EVAL_PROMPT
 
         eval_model = {
             "name": eval_model_id,

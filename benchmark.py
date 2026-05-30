@@ -880,12 +880,11 @@ def main():
         eval_config = load_eval_config(config_path_arg)
         eval_prompt_path = args.eval_prompt or DEFAULT_EVAL_PROMPT_FILE
 
-        if not os.path.isfile(eval_prompt_path):
-            print(f"Error: Eval prompt file not found: {eval_prompt_path}")
-            print("Create an eval-prompt.txt with {question} and {answer} placeholders.")
-            sys.exit(1)
-
-        eval_prompt_template = load_eval_prompt(eval_prompt_path)
+        if os.path.isfile(eval_prompt_path):
+            eval_prompt_template = load_eval_prompt(eval_prompt_path)
+        else:
+            import db as dbmod
+            eval_prompt_template = dbmod.DEFAULT_EVAL_PROMPT
 
         eval_model_id = eval_config.get("model_id", DEFAULT_EVAL_MODEL)
         eval_model = {
