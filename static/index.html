@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Benchmark Tool</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f3f4f6;color:#1f2937}
+.tab-bar{display:flex;background:#1f2937;padding:0 12px}
+.tab{padding:12px 20px;color:#d1d5db;cursor:pointer;border-bottom:3px solid transparent;transition:.15s}
+.tab:hover{color:#fff;background:#374151}
+.tab.active{color:#fff;border-bottom-color:#3b82f6}
+.content{max-width:960px;margin:24px auto;padding:0 16px}
+.card{background:#fff;border-radius:8px;padding:24px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+h2{margin-bottom:16px;font-size:1.25rem}
+h3{margin-bottom:8px;font-size:1rem}
+label{display:block;margin-bottom:4px;font-weight:600;font-size:.875rem}
+input[type=text],input[type=password],textarea,select{width:100%;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:.875rem;margin-bottom:12px}
+textarea{min-height:120px;resize:vertical;font-family:inherit}
+button{padding:10px 20px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:.875rem;font-weight:600;transition:.15s}
+button:hover{background:#2563eb}
+button:disabled{opacity:.5;cursor:not-allowed}
+button.danger{background:#ef4444}
+button.danger:hover{background:#dc2626}
+button.sm{padding:4px 10px;font-size:.75rem}
+.status{padding:8px 14px;border-radius:6px;font-size:.875rem;margin-bottom:8px}
+.status.ok{background:#d1fae5;color:#065f46}
+.status.error{background:#fee2e2;color:#991b1b}
+.status.running{background:#dbeafe;color:#1e40af}
+.progress-bar{height:8px;background:#e5e7eb;border-radius:4px;overflow:hidden;margin:8px 0}
+.progress-fill{height:100%;background:#3b82f6;border-radius:4px;transition:width .3s}
+table{width:100%;border-collapse:collapse;font-size:.875rem}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid #e5e7eb}
+th{background:#f9fafb;font-weight:600}
+.badge{display:inline-block;padding:2px 8px;border-radius:9999px;font-size:.75rem;font-weight:600}
+.badge-green{background:#d1fae5;color:#065f46}
+.badge-red{background:#fee2e2;color:#991b1b}
+.badge-blue{background:#dbeafe;color:#1e40af}
+.flex{display:flex;gap:12px;align-items:center}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.mt16{margin-top:16px}
+.mb8{margin-bottom:8px}
+.text-sm{font-size:.8rem;color:#6b7280}
+details summary{cursor:pointer;font-weight:600;padding:8px 0}
+.inline-models{display:flex;flex-wrap:wrap;gap:8px}
+.inline-models .chip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:#e5e7eb;border-radius:9999px;font-size:.8rem}
+.inline-models .chip button{background:none;color:#ef4444;padding:0 4px;font-size:1rem;line-height:1}
+.api-key-row{position:relative;margin-bottom:12px}
+.api-key-row input{padding-right:40px}
+.api-key-row .toggle-vis{position:absolute;right:8px;top:36px;cursor:pointer;font-size:.75rem;color:#6b7280;background:none;border:none;padding:4px}
+.api-key-row .key-status{position:absolute;right:8px;top:36px;font-size:.75rem;color:#065f46}
+.criteria-list{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.criteria-chip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:#e5e7eb;border-radius:9999px;font-size:.8rem}
+.criteria-chip button{background:none;color:#ef4444;padding:0 4px;font-size:1rem;line-height:1}
+.model-card{border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:8px}
+.model-card .model-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.model-card .model-header h4{font-size:.9rem}
+.model-edit{display:none;margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb}
+.model-edit.open{display:block}
+</style>
+</head>
+<body>
+
+<div class="tab-bar">
+  <div class="tab active" data-tab="configure">Configure</div>
+  <div class="tab" data-tab="run">Run</div>
+  <div class="tab" data-tab="results">Results</div>
+  <div class="tab" data-tab="evaluation">Evaluation</div>
+  <div class="tab" data-tab="graph">Graph</div>
+</div>
+
+<!-- CONFIGURE TAB -->
+<div class="content" id="tab-configure">
+  <div class="card">
+    <h2>Connection Settings</h2>
+    <label for="cfg-url">Endpoint URL</label>
+    <input type="text" id="cfg-url" placeholder="http://localhost:8000/v1">
+    <label for="cfg-model">Default Model ID</label>
+    <input type="text" id="cfg-model" placeholder="model-id">
+    <div class="api-key-row">
+      <label for="cfg-api-key">API Key</label>
+      <input type="password" id="cfg-api-key" placeholder="Enter API key (leave blank to keep current)">
+      <span id="cfg-api-status" class="text-sm"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Models to Test</h2>
+    <div id="cfg-models-list"></div>
+    <button class="mt16" onclick="showAddModel()">Add Model</button>
+    <div id="add-model-form" class="mt16" style="display:none">
+      <label for="am-name">Model Name</label>
+      <input type="text" id="am-name" placeholder="Model name">
+      <label for="am-model-id">Model ID</label>
+      <input type="text" id="am-model-id" placeholder="Model ID (defaults to name)">
+      <label for="am-base-url">Base URL (optional, inherits default)</label>
+      <input type="text" id="am-base-url" placeholder="http://localhost:8000/v1">
+      <label for="am-api-key">API Key (optional, inherits default)</label>
+      <input type="password" id="am-api-key" placeholder="API key">
+      <button onclick="addModel()">Add</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Evaluation Settings</h2>
+    <label for="cfg-eval-url">Eval Endpoint URL</label>
+    <input type="text" id="cfg-eval-url" placeholder="http://localhost:8000/v1">
+    <label for="cfg-eval-model">Eval Model ID</label>
+    <input type="text" id="cfg-eval-model" placeholder="eval-model-id">
+    <div class="api-key-row">
+      <label for="cfg-eval-api-key">Eval API Key</label>
+      <input type="password" id="cfg-eval-api-key" placeholder="Enter API key (leave blank to keep current)">
+      <span id="cfg-eval-api-status" class="text-sm"></span>
+    </div>
+    <label for="cfg-eval-criteria-add">Add Criterion</label>
+    <div class="flex">
+      <input type="text" id="cfg-eval-criteria-add" placeholder="New criterion name" style="margin-bottom:0">
+      <button onclick="addCriterion()">Add</button>
+    </div>
+    <div class="criteria-list mt16" id="cfg-criteria"></div>
+    <label for="cfg-eval-prompt">Eval Prompt Template</label>
+    <textarea id="cfg-eval-prompt" style="min-height:200px;font-family:monospace;font-size:.8rem"></textarea>
+    <div class="text-sm">Placeholders: {question}, {answer}, {duration}, {response_tokens}, {response_tps}</div>
+  </div>
+
+  <button onclick="saveConfig()">Save Configuration</button>
+</div>
+
+<!-- RUN TAB -->
+<div class="content" id="tab-run" style="display:none">
+  <div class="card">
+    <h2>Run Benchmark</h2>
+    <label for="run-questions">Questions (one per line)</label>
+    <textarea id="run-questions" placeholder="What is 2+2?&#10;Explain quantum mechanics briefly."></textarea>
+    <label for="run-output-dir">Run Name</label>
+    <input type="text" id="run-output-dir" placeholder="my-benchmark-run">
+    <div class="text-sm mb8">Leave blank for auto-generated name.</div>
+    <label>Models to test (leave empty to use all configured)</label>
+    <div id="run-models-select" class="mb8"></div>
+    <div id="run-status"></div>
+    <button id="run-btn" onclick="startBenchmark()">Start Benchmark</button>
+  </div>
+</div>
+
+<!-- RESULTS TAB -->
+<div class="content" id="tab-results" style="display:none">
+  <div class="card">
+    <h2>Past Runs</h2>
+    <div id="results-list"></div>
+    <button class="mt16" onclick="loadResults()">Refresh</button>
+  </div>
+</div>
+
+<!-- EVALUATION TAB -->
+<div class="content" id="tab-evaluation" style="display:none">
+  <div class="card">
+    <h2>Evaluate Results</h2>
+    <p class="text-sm mb8">Runs evaluation on all saved benchmark results using the configured evaluation model.</p>
+    <div id="eval-status"></div>
+    <button id="eval-btn" onclick="startEvaluation()">Start Evaluation</button>
+  </div>
+  <div class="card mt16">
+    <h2>Evaluation Results</h2>
+    <div id="eval-results"></div>
+  </div>
+</div>
+
+<!-- GRAPH TAB -->
+<div class="content" id="tab-graph" style="display:none">
+  <div class="card">
+    <h2>Comparison Graph</h2>
+    <button id="graph-gen-btn" onclick="generateGraph()">Generate Graph</button>
+    <div id="graph-status" class="mt16"></div>
+    <iframe id="graph-frame" style="width:100%;height:600px;border:none;display:none;border-radius:8px;margin-top:16px"></iframe>
+  </div>
+</div>
+
+<script>
+// ── Tab switching ──────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('[id^="tab-"]').forEach(x => x.style.display = 'none');
+  t.classList.add('active');
+  document.getElementById('tab-' + t.dataset.tab).style.display = '';
+}));
+
+// ── Configure tab ──────────────────────────────────────────
+let configData = null;
+
+function loadConfig() {
+  fetch('/api/config').then(r => r.json()).then(data => {
+    configData = data;
+    document.getElementById('cfg-url').value = data.llm.url || '';
+    document.getElementById('cfg-model').value = data.llm.model || '';
+    document.getElementById('cfg-api-status').textContent = data.llm.api_key_set ? 'API key configured' : 'No API key set';
+    document.getElementById('cfg-eval-url').value = data.eval.url || '';
+    document.getElementById('cfg-eval-model').value = data.eval.model_id || '';
+    document.getElementById('cfg-eval-api-status').textContent = data.eval.api_key_set ? 'API key configured' : 'No API key set';
+
+    renderModels(data.models);
+    renderCriteria(data.eval_criteria);
+
+    const prompt = data.eval_prompt_template || '';
+    document.getElementById('cfg-eval-prompt').value = prompt;
+
+    updateRunModelSelect(data.models);
+  });
+}
+
+function renderModels(models) {
+  const el = document.getElementById('cfg-models-list');
+  if (!models.length) { el.innerHTML = '<div class="text-sm">No models configured.</div>'; return; }
+  el.innerHTML = '';
+  models.forEach(m => {
+    const card = document.createElement('div');
+    card.className = 'model-card';
+    card.innerHTML = `
+      <div class="model-header">
+        <h4>${m.name}</h4>
+        <div class="flex">
+          <button class="sm" onclick="toggleModelEdit(${m.id})">Edit</button>
+          <button class="sm danger" onclick="deleteModel(${m.id})">&times;</button>
+        </div>
+      </div>
+      <div class="text-sm">Model ID: ${m.model_id} | URL: ${m.base_url || '(inherits)'} | Key: ${m.api_key_set ? 'set' : '(inherits)'}</div>
+      <div class="model-edit" id="model-edit-${m.id}">
+        <label for="med-name-${m.id}">Model Name</label>
+        <input type="text" id="med-name-${m.id}" value="${m.name}">
+        <label for="med-model-id-${m.id}">Model ID</label>
+        <input type="text" id="med-model-id-${m.id}" value="${m.model_id}">
+        <label for="med-base-url-${m.id}">Base URL (blank to inherit)</label>
+        <input type="text" id="med-base-url-${m.id}" value="${m.base_url || ''}" placeholder="Inherits default">
+        <label for="med-api-key-${m.id}">API Key (blank to inherit)</label>
+        <input type="password" id="med-api-key-${m.id}" placeholder="Leave blank to keep current">
+        <button class="sm" onclick="saveModelEdit(${m.id})">Save</button>
+      </div>`;
+    el.appendChild(card);
+  });
+}
+
+function renderCriteria(criteria) {
+  const el = document.getElementById('cfg-criteria');
+  el.innerHTML = '';
+  criteria.forEach((c, i) => {
+    const chip = document.createElement('span');
+    chip.className = 'criteria-chip';
+    chip.innerHTML = `${c} <button onclick="removeCriterion(${i})">&times;</button>`;
+    el.appendChild(chip);
+  });
+}
+
+function toggleModelEdit(id) {
+  const el = document.getElementById('model-edit-' + id);
+  el.classList.toggle('open');
+}
+
+function showAddModel() {
+  const f = document.getElementById('add-model-form');
+  f.style.display = f.style.display === 'none' ? 'block' : 'none';
+}
+
+function addModel() {
+  const name = document.getElementById('am-name').value.trim();
+  if (!name) return;
+  if (!configData) return;
+  configData.models.push({
+    id: Date.now(),
+    name: name,
+    model_id: document.getElementById('am-model-id').value.trim() || name,
+    base_url: document.getElementById('am-base-url').value.trim() || null,
+    api_key_set: !!document.getElementById('am-api-key').value.trim()
+  });
+  document.getElementById('am-name').value = '';
+  document.getElementById('am-model-id').value = '';
+  document.getElementById('am-base-url').value = '';
+  document.getElementById('am-api-key').value = '';
+  renderModels(configData.models);
+  updateRunModelSelect(configData.models);
+}
+
+function deleteModel(id) {
+  if (!confirm('Delete this model?')) return;
+  fetch('/api/models/' + id, { method: 'DELETE' })
+    .then(r => r.json())
+    .then(() => loadConfig());
+}
+
+function saveModelEdit(id) {
+  const payload = {
+    name: document.getElementById('med-name-' + id).value.trim(),
+    model_id: document.getElementById('med-model-id-' + id).value.trim(),
+    base_url: document.getElementById('med-base-url-' + id).value.trim() || null,
+  };
+  const apiKey = document.getElementById('med-api-key-' + id).value.trim();
+  if (apiKey) payload.api_key = apiKey;
+  fetch('/api/models/' + id, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  }).then(r => r.json()).then(() => loadConfig());
+}
+
+function addCriterion() {
+  const inp = document.getElementById('cfg-eval-criteria-add');
+  const val = inp.value.trim();
+  if (!val) return;
+  if (!configData) return;
+  configData.eval_criteria.push(val);
+  inp.value = '';
+  renderCriteria(configData.eval_criteria);
+}
+
+function removeCriterion(idx) {
+  if (!configData) return;
+  configData.eval_criteria.splice(idx, 1);
+  renderCriteria(configData.eval_criteria);
+}
+
+function saveConfig() {
+  if (!configData) return;
+  configData.llm.url = document.getElementById('cfg-url').value.trim();
+  configData.llm.model = document.getElementById('cfg-model').value.trim();
+  configData.eval.url = document.getElementById('cfg-eval-url').value.trim();
+  configData.eval.model_id = document.getElementById('cfg-eval-model').value.trim();
+
+  const body = {
+    llm: {
+      url: configData.llm.url,
+      model: configData.llm.model,
+    },
+    eval: {
+      url: configData.eval.url,
+      model_id: configData.eval.model_id,
+    },
+    eval_criteria: configData.eval_criteria,
+    eval_prompt_template: document.getElementById('cfg-eval-prompt').value,
+    models: configData.models.map(m => ({
+      id: m.id,
+      name: m.name,
+      model_id: m.model_id,
+      base_url: m.base_url || null,
+    })),
+  };
+
+  const llmKey = document.getElementById('cfg-api-key').value.trim();
+  if (llmKey) body.llm.api_key = llmKey;
+
+  const evalKey = document.getElementById('cfg-eval-api-key').value.trim();
+  if (evalKey) body.eval.api_key = evalKey;
+
+  fetch('/api/config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(r => r.json()).then(d => {
+    if (d.error) {
+      alert('Error: ' + d.error);
+      return;
+    }
+    document.getElementById('cfg-api-key').value = '';
+    document.getElementById('cfg-eval-api-key').value = '';
+    loadConfig();
+  });
+}
+
+// ── Run tab ────────────────────────────────────────────────
+let pollBenchmarkInterval = null;
+
+function updateRunModelSelect(models) {
+  const el = document.getElementById('run-models-select');
+  el.innerHTML = '';
+  models.forEach(m => {
+    const label = document.createElement('label');
+    label.style.cssText = 'display:flex;align-items:center;gap:6px;font-weight:400;font-size:.875rem;margin-bottom:4px;cursor:pointer;';
+    label.innerHTML = `<input type="checkbox" class="run-model-cb" value="${m.name}" checked> ${m.name}`;
+    el.appendChild(label);
+  });
+}
+
+function startBenchmark() {
+  const questions = document.getElementById('run-questions').value.trim().split('\n').filter(l => l.trim());
+  if (!questions.length) { alert('Enter at least one question.'); return; }
+
+  const outputDir = document.getElementById('run-output-dir').value.trim();
+  const selectedModels = Array.from(document.querySelectorAll('.run-model-cb:checked')).map(cb => cb.value);
+
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true;
+
+  const body = {
+    questions: questions,
+    output_dir: outputDir || undefined,
+  };
+  if (selectedModels.length > 0) body.models = selectedModels;
+
+  fetch('/api/benchmark/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(r => r.json()).then(() => {
+    pollBenchmarkStatus();
+  });
+}
+
+function pollBenchmarkStatus() {
+  if (pollBenchmarkInterval) clearInterval(pollBenchmarkInterval);
+  pollBenchmarkInterval = setInterval(() => {
+    fetch('/api/benchmark/status').then(r => r.json()).then(s => {
+      const el = document.getElementById('run-status');
+      if (s.running) {
+        const pct = s.progress ? s.progress.percent : 0;
+        const cur = s.progress ? s.progress.current : 0;
+        const tot = s.progress ? s.progress.total : 0;
+        el.innerHTML = '<div class="status running">Running… ' + cur + '/' + tot + ' (' + pct + '%)</div><div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%"></div></div>';
+      } else if (s.error) {
+        el.innerHTML = '<div class="status error">Error: ' + s.error + '</div>';
+        document.getElementById('run-btn').disabled = false;
+        clearInterval(pollBenchmarkInterval);
+      } else {
+        el.innerHTML = '<div class="status ok">Benchmark complete.</div>';
+        document.getElementById('run-btn').disabled = false;
+        clearInterval(pollBenchmarkInterval);
+        loadResults();
+      }
+    });
+  }, 1500);
+}
+
+// ── Results tab ────────────────────────────────────────────
+function loadResults() {
+  fetch('/api/results').then(r => r.json()).then(data => {
+    const el = document.getElementById('results-list');
+    if (!data.runs.length) { el.innerHTML = '<div class="text-sm">No benchmark runs found.</div>'; return; }
+    let html = '';
+    data.runs.forEach(run => {
+      const statusBadge = run.status === 'completed' ? '<span class="badge badge-green">Completed</span>' :
+                         run.status === 'running' ? '<span class="badge badge-blue">Running</span>' :
+                         '<span class="badge badge-red">' + run.status + '</span>';
+      html += '<details style="margin:12px 0"><summary><strong>' + run.name + '</strong> ' + statusBadge + ' — ' + run.question_count + ' questions, ' + run.model_count + ' models';
+      if (run.comparison) html += ' (' + run.comparison.models_tested + ' compared)';
+      html += '</summary><div style="padding:8px">';
+      if (run.comparison) {
+        html += '<h3>Rankings</h3><table><tr><th>Rank</th><th>Model</th><th>Avg TPS</th></tr>';
+        Object.keys(run.comparison.rankings).forEach(k => {
+          const v = run.comparison.rankings[k];
+          html += '<tr><td>' + k + '</td><td>' + v.model_name + '</td><td>' + v.avg_response_tps + '</td></tr>';
+        });
+        html += '</table>';
+      }
+      if (run.summaries && run.summaries.length) {
+        html += '<h3>Per-Model Summaries</h3>';
+        run.summaries.forEach(s => {
+          const a = s.aggregate_metrics;
+          html += '<table><tr><th>Model</th><th>Total Questions</th><th>Avg Duration</th><th>Prompt Tokens</th><th>Response Tokens</th><th>Avg Response TPS</th></tr>';
+          html += '<tr><td>' + s.model_name + '</td><td>' + s.total_questions + '</td><td>' + a.avg_duration_seconds + 's</td><td>' + a.total_prompt_tokens + '</td><td>' + a.total_response_tokens + '</td><td>' + a.avg_response_tokens_per_second + '</td></tr>';
+          html += '</table>';
+        });
+      } else if (run.summary) {
+        html += '<h3>Summary</h3><table><tr><th>Total Questions</th><th>Avg Duration</th><th>Total Prompt Tokens</th><th>Total Response Tokens</th><th>Avg Response TPS</th></tr>';
+        const a = run.summary.aggregate_metrics;
+        html += '<tr><td>' + run.summary.total_questions + '</td><td>' + a.avg_duration_seconds + 's</td><td>' + a.total_prompt_tokens + '</td><td>' + a.total_response_tokens + '</td><td>' + a.avg_response_tokens_per_second + '</td></tr>';
+        html += '</table>';
+      }
+      html += '<button class="sm mt16" onclick="loadQuestions(' + run.id + ')">Show Questions</button>';
+      html += '<button class="sm mt16" onclick="exportRun(' + run.id + ',\'' + run.name.replace(/'/g, "\\'") + '\')">Export</button>';
+      html += '<button class="sm danger mt16" onclick="deleteRun(' + run.id + ',\'' + run.name.replace(/'/g, "\\'") + '\')">Delete</button>';
+      html += '<div id="questions-' + run.id + '"></div>';
+      html += '</div></details>';
+    });
+    el.innerHTML = html;
+  });
+}
+
+function loadQuestions(runId) {
+  fetch('/api/results/' + runId + '/questions').then(r => r.json()).then(data => {
+    const el = document.getElementById('questions-' + runId);
+    if (el.children.length > 0) { el.innerHTML = ''; return; }
+    const byModel = {};
+    data.questions.forEach(q => {
+      byModel[q.model_name] = byModel[q.model_name] || [];
+      byModel[q.model_name].push(q);
+    });
+    let html = '';
+    Object.keys(byModel).forEach(modelName => {
+      html += '<h3>' + modelName + '</h3>';
+      html += '<table><tr><th>#</th><th>Question</th><th>Duration</th><th>Response TPS</th><th>Tokens</th></tr>';
+      byModel[modelName].forEach((q, i) => {
+        html += '<tr><td>' + q.question_index + '</td><td>' + q.question.substring(0, 80) + '</td><td>' + q.metrics.duration_seconds + 's</td><td>' + q.metrics.response_tokens_per_second + '</td><td>' + q.metrics.response_tokens + '</td></tr>';
+      });
+      html += '</table>';
+    });
+    el.innerHTML = html;
+  });
+}
+
+function deleteRun(runId, name) {
+  if (!confirm('Delete run "' + name + '" and all its data?')) return;
+  fetch('/api/results/' + runId, { method: 'DELETE' })
+    .then(r => r.json())
+    .then(() => loadResults());
+}
+
+function exportRun(runId, name) {
+  fetch('/api/results/' + runId + '/export')
+    .then(r => r.json())
+    .then(data => {
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name + '-export.json';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
+}
+
+// ── Evaluation tab ─────────────────────────────────────────
+let pollEvalInterval = null;
+
+function startEvaluation() {
+  const btn = document.getElementById('eval-btn');
+  btn.disabled = true;
+
+  fetch('/api/evaluation/run', { method: 'POST', headers: { 'Content-Type': 'application/json' } }).then(r => r.json()).then(() => {
+    pollEvalStatus();
+  });
+}
+
+function pollEvalStatus() {
+  if (pollEvalInterval) clearInterval(pollEvalInterval);
+  pollEvalInterval = setInterval(() => {
+    fetch('/api/evaluation/status').then(r => r.json()).then(s => {
+      const el = document.getElementById('eval-status');
+      if (s.running) {
+        const pct = s.progress ? s.progress.percent : 0;
+        const cur = s.progress ? s.progress.current : 0;
+        const tot = s.progress ? s.progress.total : 0;
+        el.innerHTML = '<div class="status running">Evaluating… ' + cur + '/' + tot + ' (' + pct + '%)</div><div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%"></div></div>';
+      } else if (s.error) {
+        el.innerHTML = '<div class="status error">Error: ' + s.error + '</div>';
+        document.getElementById('eval-btn').disabled = false;
+        clearInterval(pollEvalInterval);
+      } else {
+        el.innerHTML = '<div class="status ok">Evaluation complete.</div>';
+        document.getElementById('eval-btn').disabled = false;
+        clearInterval(pollEvalInterval);
+        loadEvalResults();
+      }
+    });
+  }, 1500);
+}
+
+function loadEvalResults() {
+  fetch('/api/results').then(r => r.json()).then(data => {
+    const el = document.getElementById('eval-results');
+    el.innerHTML = '<div class="text-sm">Loading eval results…</div>';
+
+    data.runs.forEach(run => {
+      if (!run.summaries || !run.summaries.length) return;
+      run.summaries.forEach(sum => {
+        const modelName = sum.model_name || sum.model_id;
+        fetch('/api/evaluation/results/' + run.id + '/' + encodeURIComponent(modelName))
+          .then(r => { if (!r.ok) return null; return r.json(); })
+          .then(summary => {
+            if (!summary) return;
+            let html = '<details style="margin:12px 0"><summary><strong>' + run.name + '</strong> — ' + modelName + ' (' + (summary.total_evaluations || 0) + ' evals)</summary><div style="padding:8px">';
+            if (summary.eval_averages) {
+              html += '<h3>Averages</h3><table><tr>';
+              Object.keys(summary.eval_averages).forEach(k => {
+                html += '<th>' + k + '</th>';
+              });
+              html += '</tr><tr>';
+              Object.keys(summary.eval_averages).forEach(k => {
+                html += '<td>' + summary.eval_averages[k].toFixed(1) + '</td>';
+              });
+              html += '</tr></table>';
+            }
+            summary.evaluations.forEach((ev, i) => {
+              html += '<details style="margin:8px 0"><summary>Q' + (i + 1) + ': ' + (ev.question || '').substring(0, 60) + '</summary><div style="padding:8px">';
+              if (ev.answer) {
+                html += '<details><summary>Answer</summary><div class="text-sm">' + ev.answer.substring(0, 300) + '...</div></details>';
+              }
+              if (ev.evaluation) {
+                html += '<p class="text-sm">' + ev.evaluation.replace(/\n/g, '<br>') + '</p>';
+              }
+              if (ev.metrics) {
+                html += '<table><tr><th>Duration</th><th>Response Tokens</th><th>Response TPS</th></tr><tr><td>' + ev.metrics.duration_seconds + 's</td><td>' + ev.metrics.response_tokens + '</td><td>' + ev.metrics.response_tokens_per_second + '</td></tr></table>';
+              }
+              html += '</div></details>';
+            });
+            html += '</div></details>';
+            el.innerHTML = html + el.innerHTML;
+          }).catch(() => {});
+      });
+    });
+  });
+}
+
+// ── Graph tab ──────────────────────────────────────────────
+function generateGraph() {
+  const btn = document.getElementById('graph-gen-btn');
+  btn.disabled = true;
+
+  fetch('/api/graph/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' } }).then(r => r.json()).then(d => {
+    const status = document.getElementById('graph-status');
+    if (d.error) {
+      status.innerHTML = '<div class="status error">' + d.error + '</div>';
+      btn.disabled = false;
+      return;
+    }
+    status.innerHTML = '<div class="status ok">Graph generated: ' + d.output + '</div>';
+    showGraph();
+    btn.disabled = false;
+  });
+}
+
+function showGraph() {
+  fetch('/api/graph').then(r => {
+    if (!r.ok) return;
+    return r.text();
+  }).then(html => {
+    const iframe = document.getElementById('graph-frame');
+    iframe.srcdoc = html;
+    iframe.style.display = 'block';
+  });
+}
+
+// ── Init ───────────────────────────────────────────────────
+loadConfig();
+loadResults();
+</script>
+</body>
+</html>

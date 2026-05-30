@@ -30,6 +30,7 @@ DEFAULT_API_KEY = "none"
 CONFIG_FILENAME = "config.ini"
 DEFAULT_EVAL_PROMPT_FILE = "eval-prompt.txt"
 DEFAULT_EVAL_MODEL = "eval-model"
+DEFAULT_EVAL_API_KEY = "none"
 
 
 def load_config(path: str | None = None) -> dict:
@@ -412,26 +413,47 @@ def run_model_benchmark(
 
 
 def run_evaluation(
-    eval_model: dict,
-    result_files: list[str],
-    eval_prompt_template: str,
-    output_dir: str,
-) -> None:
+    conn_or_model,
+    run_id_or_files,
+    eval_model_or_files,
+    result_files_or_prompt,
+    eval_prompt_template_or_output=None,
+    output_dir=None,
+) -> list[dict]:
     """Evaluate previously saved benchmark results using an evaluation model.
 
-    Each result file is read, the evaluation prompt is populated with the
-    question and answer, and the eval model is queried for an assessment.
+    DB mode: run_evaluation(conn, run_id, eval_model, file_results, eval_prompt_template)
+    File mode: run_evaluation(eval_model, result_files, eval_prompt_template, output_dir)
     """
+    import db as dbmod
+
+    # Detect which mode based on first argument type
+    if hasattr(conn_or_model, "execute"):
+        # DB mode: (conn, run_id, eval_model, file_results, eval_prompt_template)
+        conn = conn_or_model
+        run_id = run_id_or_files
+        eval_model = eval_model_or_files
+        result_files = result_files_or_prompt
+        eval_prompt_template = eval_prompt_template_or_output
+        is_db_mode = True
+    else:
+        # File mode: (eval_model, result_files, eval_prompt_template, output_dir)
+        eval_model = conn_or_model
+        result_files = run_id_or_files
+        eval_prompt_template = eval_model_or_files
+        output_dir = result_files_or_prompt
+        is_db_mode = False
+
     client = OpenAI(base_url=eval_model["base_url"], api_key=eval_model["api_key"])
 
-    os.makedirs(output_dir, exist_ok=True)
+    if not is_db_mode:
+        os.makedirs(output_dir, exist_ok=True)
 
     print(f"\n{'='*60}")
-    print(f"EVALUATION")
+    print("EVALUATION")
     print(f"Eval model: {eval_model['name']} ({eval_model['model_id']})")
     print(f"Eval URL:   {eval_model['base_url']}")
     print(f"Results:    {len(result_files)} files")
-    print(f"Out:        {output_dir}/")
     print(f"{'='*60}")
 
     evaluations: list[dict] = []
@@ -514,50 +536,72 @@ def run_evaluation(
 
         evaluations.append(eval_entry)
 
-        # Save individual evaluation
-        safe_name = sanitize_name(question)
-        eval_filename = f"eval_q{idx:03d}_{safe_name}.json"
-        eval_filepath = os.path.join(output_dir, eval_filename)
-        with open(eval_filepath, "w", encoding="utf-8") as f:
-            json.dump(eval_entry, f, indent=2, ensure_ascii=False)
-        print(f"    Saved: {eval_filepath}")
+        if is_db_mode:
+            # Write to DB
+            model_name = os.path.basename(os.path.dirname(filepath))
+            dbmod.save_evaluation(
+                conn, run_id, model_name, idx,
+                eval_entry["question"],
+                eval_entry["answer"],
+                eval_entry["metrics"],
+                eval_entry["evaluation"],
+                eval_entry["eval_duration_seconds"],
+                eval_entry.get("error"),
+                eval_entry.get("timestamp"),
+            )
+            print(f"    Saved:  db eval_id={conn.execute('SELECT last_insert_rowid()').fetchone()[0]}")
+        else:
+            # Save individual evaluation to file
+            safe_name = sanitize_name(question)
+            eval_filename = f"eval_q{idx:03d}_{safe_name}.json"
+            eval_filepath = os.path.join(output_dir, eval_filename)
+            with open(eval_filepath, "w", encoding="utf-8") as f:
+                json.dump(eval_entry, f, indent=2, ensure_ascii=False)
+            print(f"    Saved: {eval_filepath}")
 
     # Save evaluation summary
     if evaluations:
         total_duration = sum(e["eval_duration_seconds"] for e in evaluations)
-        summary = {
-            "eval_model": eval_model["name"],
-            "eval_model_id": eval_model["model_id"],
-            "total_evaluations": len(evaluations),
-            "aggregate_metrics": {
-                "total_duration_seconds": round(total_duration, 3),
-                "avg_duration_seconds": round(total_duration / len(evaluations), 3),
-            },
-            "evaluations": [
-                {
-                    "model_id": e["model_id"],
-                    "question": e["question"],
-                    "evaluation": e["evaluation"],
-                    "metrics": e.get("metrics"),
-                    "duration_seconds": e["eval_duration_seconds"],
-                }
-                for e in evaluations
-            ],
-            "individual_files": [e["source_file"] for e in evaluations],
-            "timestamp": datetime.now().isoformat(),
-        }
 
-        summary_path = os.path.join(output_dir, "eval-summary.json")
-        with open(summary_path, "w", encoding="utf-8") as f:
-            json.dump(summary, f, indent=2, ensure_ascii=False)
+        if is_db_mode:
+            print("\n  Eval summary:")
+            print(f"  Total eval duration: {total_duration:.3f}s")
+        else:
+            summary = {
+                "eval_model": eval_model["name"],
+                "eval_model_id": eval_model["model_id"],
+                "total_evaluations": len(evaluations),
+                "aggregate_metrics": {
+                    "total_duration_seconds": round(total_duration, 3),
+                    "avg_duration_seconds": round(total_duration / len(evaluations), 3),
+                },
+                "evaluations": [
+                    {
+                        "model_id": e["model_id"],
+                        "question": e["question"],
+                        "evaluation": e["evaluation"],
+                        "metrics": e.get("metrics"),
+                        "duration_seconds": e["eval_duration_seconds"],
+                    }
+                    for e in evaluations
+                ],
+                "individual_files": [e["source_file"] for e in evaluations],
+                "timestamp": datetime.now().isoformat(),
+            }
 
-        print(f"\n  Eval summary saved: {summary_path}")
-        print(f"  Total eval duration: {total_duration:.3f}s")
+            summary_path = os.path.join(output_dir, "eval-summary.json")
+            with open(summary_path, "w", encoding="utf-8") as f:
+                json.dump(summary, f, indent=2, ensure_ascii=False)
+
+            print(f"\n  Eval summary saved: {summary_path}")
+            print(f"  Total eval duration: {total_duration:.3f}s")
+
+    return evaluations
 
 
 EVAL_CRITERIA = ["Accuracy", "Completeness", "Clarity", "Reasoning", "Speed", "Refusal", "Overall"]
 
-def parse_eval_scores(evaluation_text: str) -> dict[str, float] | None:
+def parse_eval_scores(evaluation_text: str, criteria: list[str] | None = None) -> dict[str, float] | None:
     """Extract numeric scores for each evaluation criterion from evaluation text.
 
     Returns a dict like {"Accuracy": 10, "Completeness": 9.5, ...} or None if
@@ -566,8 +610,9 @@ def parse_eval_scores(evaluation_text: str) -> dict[str, float] | None:
     if not evaluation_text or evaluation_text.startswith("ERROR:"):
         return None
 
+    crits = criteria or EVAL_CRITERIA
     scores: dict[str, float] = {}
-    for criterion in EVAL_CRITERIA:
+    for criterion in crits:
         match = re.search(
             rf'(?:[-•]\s*|\s)\**{criterion}:\s*(\d+\.?\d*)/?\d*\**',
             evaluation_text,
@@ -590,62 +635,86 @@ def _html_escape(text: str) -> str:
         .replace("'", "&#39;")
     )
 
-def generate_comparison_graph(eval_dir: str, output_path: str) -> dict:
-    """Generate an HTML comparison chart from evaluation summary JSONs.
-
-    Reads all eval-summary.json files from the eval subdirectories, parses
-    per-question scores, computes per-model averages, and writes a self-contained
-    Chart.js HTML file.
-
-    Returns a summary dict with model averages for terminal display.
+def generate_comparison_graph(eval_dir: str = None, output_path: str = None,
+                              conn=None) -> dict:
+    """Generate an HTML comparison chart from evaluation data.
+    
+    If conn is provided and eval_dir is None, reads from DB.
+    Otherwise, reads eval-summary.json files from eval subdirectories.
     """
-    if not os.path.isdir(eval_dir):
-        print(f"Error: Eval directory not found: {eval_dir}")
-        sys.exit(1)
+    import db as dbmod
 
-    # Collect per-model data
-    # model_data[model_name] = list of (scores_dict, question)
+    # Get criteria (dynamic — may come from DB)
+    try:
+        db_conn = conn if conn else dbmod.get_db()
+        criteria_json = dbmod.get_setting(db_conn, "eval_criteria")
+        criteria = json.loads(criteria_json) if criteria_json else EVAL_CRITERIA
+        if not conn:
+            db_conn.close()
+    except Exception:
+        criteria = EVAL_CRITERIA
+
     model_data: dict[str, list[tuple[dict[str, float], str]]] = {}
 
-    for entry in sorted(os.listdir(eval_dir)):
-        summary_path = os.path.join(eval_dir, entry, "eval-summary.json")
-        if not os.path.isfile(summary_path):
-            continue
+    if conn and eval_dir is None:
+        # Read from DB
+        runs = dbmod.get_runs(conn)
+        for run in runs:
+            evals_by_model = dbmod.get_evaluations_grouped_by_model(conn, run["id"])
+            for model_name, evals in evals_by_model.items():
+                for ev in evals:
+                    eval_text = ev.get("evaluation", "")
+                    scores = parse_eval_scores(eval_text, criteria)
+                    question = ev.get("question", "Unknown")
+                    if scores:
+                        model_data.setdefault(model_name, []).append((scores, question))
+                    else:
+                        print(f"  Warning: could not parse scores for {model_name}: {question[:60]}")
+    else:
+        # Legacy file-based approach
+        if not eval_dir or not os.path.isdir(eval_dir):
+            print(f"Error: Eval directory not found: {eval_dir}")
+            sys.exit(1)
 
-        try:
-            with open(summary_path, "r", encoding="utf-8") as f:
-                summary = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            print(f"  Warning: could not read {summary_path}, skipping")
-            continue
+        for entry in sorted(os.listdir(eval_dir)):
+            summary_path = os.path.join(eval_dir, entry, "eval-summary.json")
+            if not os.path.isfile(summary_path):
+                continue
 
-        evaluations = summary.get("evaluations", [])
-        for ev in evaluations:
-            eval_text = ev.get("evaluation", "")
-            scores = parse_eval_scores(eval_text)
-            question = ev.get("question", "Unknown")
-            if scores:
-                model_data.setdefault(entry, []).append((scores, question))
-            else:
-                print(f"  Warning: could not parse scores for question in {entry}: {question[:60]}")
+            try:
+                with open(summary_path, "r", encoding="utf-8") as f:
+                    summary = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                print(f"  Warning: could not read {summary_path}, skipping")
+                continue
+
+            evaluations = summary.get("evaluations", [])
+            for ev in evaluations:
+                eval_text = ev.get("evaluation", "")
+                scores = parse_eval_scores(eval_text, criteria)
+                question = ev.get("question", "Unknown")
+                if scores:
+                    model_data.setdefault(entry, []).append((scores, question))
+                else:
+                    print(f"  Warning: could not parse scores for {entry}: {question[:60]}")
 
     if not model_data:
-        print("Error: No evaluatable data found in the eval directory.")
+        print("Error: No evaluatable data found.")
         sys.exit(1)
 
-    # Compute averages per model per criterion
+    # Compute averages
     model_names = sorted(model_data.keys())
     model_averages: dict[str, dict[str, float]] = {}
     for mname in model_names:
         entries = model_data[mname]
-        totals: dict[str, list[float]] = {c: [] for c in EVAL_CRITERIA}
+        totals: dict[str, list[float]] = {c: [] for c in criteria}
         for scores, _ in entries:
-            for c in EVAL_CRITERIA:
+            for c in criteria:
                 if c in scores:
                     totals[c].append(scores[c])
         model_averages[mname] = {c: (sum(v) / len(v)) if v else 0 for c, v in totals.items()}
 
-    # Build Chart.js datasets with distinct colors
+    # Build Chart.js datasets
     COLORS = [
         "#4e79a7", "#f28e2b", "#e15759", "#76b7b2",
         "#59a14f", "#edc948", "#b07aa1", "#ff9da7",
@@ -655,7 +724,7 @@ def generate_comparison_graph(eval_dir: str, output_path: str) -> dict:
     datasets_json: list[str] = []
     for idx, mname in enumerate(model_names):
         color = COLORS[idx % len(COLORS)]
-        values = [model_averages[mname].get(c, 0) for c in EVAL_CRITERIA]
+        values = [model_averages[mname].get(c, 0) for c in criteria]
         datasets_json.append(
             f"{{ label: {_html_escape(mname)}, backgroundColor: '{color}', "
             f"data: {values} }}"
@@ -674,17 +743,16 @@ def generate_comparison_graph(eval_dir: str, output_path: str) -> dict:
             "<table border='1' cellpadding='4' cellspacing='0' "
             "style='border-collapse:collapse; font-size:0.85em;'>"
         )
-        # Header row
         details_html.append("<tr>")
         details_html.append("<th>Question</th>")
-        for c in EVAL_CRITERIA:
+        for c in criteria:
             details_html.append(f"<th>{c}</th>")
         details_html.append("</tr>")
 
         for scores, question in entries:
             details_html.append("<tr>")
             details_html.append(f"<td>{_html_escape(question[:100])}</td>")
-            for c in EVAL_CRITERIA:
+            for c in criteria:
                 val = scores.get(c, "—")
                 details_html.append(f"<td>{val}</td>")
             details_html.append("</tr>")
@@ -692,6 +760,7 @@ def generate_comparison_graph(eval_dir: str, output_path: str) -> dict:
         details_html.append("</table></details>")
 
     # Generate HTML
+    graph_source = "DB" if (conn and eval_dir is None) else _html_escape(eval_dir or "")
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -708,15 +777,15 @@ def generate_comparison_graph(eval_dir: str, output_path: str) -> dict:
 </head>
 <body>
 <h1>Eval Score Comparison</h1>
-<p>Generated from eval results in <code>{_html_escape(eval_dir)}</code></p>
+<p>Generated from eval results in <code>{graph_source}</code></p>
 <canvas id="chart"></canvas>
 <h2>Average Scores by Model</h2>
 <table border="1" cellpadding="4" cellspacing="0"
        style="border-collapse:collapse;">
-<tr><th>Model</th>{"".join(f"<th>{c}</th>" for c in EVAL_CRITERIA)}</tr>
+<tr><th>Model</th>{"".join(f"<th>{c}</th>" for c in criteria)}</tr>
 {"".join(
     f"<tr><td>{_html_escape(m)}</td>" +
-    "".join(f"<td>{model_averages[m].get(c, 0):.1f}</td>" for c in EVAL_CRITERIA) +
+    "".join(f"<td>{model_averages[m].get(c, 0):.1f}</td>" for c in criteria) +
     "</tr>"
     for m in model_names
 )}
@@ -728,7 +797,7 @@ const ctx = document.getElementById("chart").getContext("2d");
 new Chart(ctx, {{
   type: "bar",
   data: {{
-    labels: {EVAL_CRITERIA},
+    labels: {criteria},
     datasets: [{"".join(datasets_json)}],
   }},
   options: {{
@@ -747,9 +816,10 @@ new Chart(ctx, {{
 </html>"""
 
     # Write output
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(html)
+    if output_path:
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(html)
 
     return {"model_averages": model_averages, "model_names": model_names, "output": output_path}
 
@@ -880,7 +950,7 @@ def main():
             print(row)
 
         print(f"\n  Graph saved: {graph_output}")
-        print(f"  Open in browser to see interactive chart.")
+        print("  Open in browser to see interactive chart.")
         return
 
     # Benchmark mode (requires --prompt or --questions)
@@ -941,7 +1011,7 @@ def main():
     if len(model_summaries) > 1:
         comp_path = save_cross_model_summary(model_summaries, args.output_dir)
         print(f"\n{'='*60}")
-        print(f"CROSS-MODEL COMPARISON")
+        print("CROSS-MODEL COMPARISON")
         print(f"{'='*60}")
 
         comp = json.load(open(comp_path))
