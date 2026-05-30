@@ -1,4 +1,12 @@
 [llm]
-model-id = Qwen-Lite-Deepseek
 url = http://localhost:8000/v1
 api-key = your-api-key
+
+[models]
+list = Qwen-Lite-Deepseek, DeepSeek-R1
+
+[model.Qwen-Lite-Deepseek]
+model-id = Qwen-Lite-Deepseek
+
+[model.DeepSeek-R1]
+model-id = DeepSeek-R1

@@ -3,9 +3,8 @@
 LLM Benchmark Tool - Test local LLMs running on an OpenAI-compatible endpoint.
 
 Usage:
-    python benchmark.py --questions questions.txt --model my-model [--output-dir results]
-    python benchmark.py --questions-file questions.json --model my-model
-    python benchmark.py --prompt "What is 2+2?" --model my-model
+    python benchmark.py --questions questions.txt
+    python benchmark.py --prompt "What is 2+2?" --model qwen3-8b
 """
 
 import argparse
@@ -40,12 +39,61 @@ def load_config(path: str | None = None) -> dict:
     config.read(config_path, encoding="utf-8")
 
     settings: dict = {}
+
     if config.has_section("llm"):
-        settings["model"] = config["llm"].get("model-id", "").strip()
         settings["base_url"] = config["llm"].get("url", "").strip()
         settings["api_key"] = config["llm"].get("api-key", "").strip()
+        settings["model"] = config["llm"].get("model-id", "").strip()
 
     return settings
+
+
+def load_models(config_path: str | None = None) -> list[dict]:
+    """Load model definitions from config.ini [models] section.
+
+    Each comma-separated entry is a model name. If a [model.<name>] section
+    exists, its model-id/url/api-key are used; otherwise fall back to the
+    [llm] defaults.
+
+    Returns a list of dicts with keys: name, model_id, base_url, api_key.
+    """
+    cfg_path = config_path or CONFIG_FILENAME
+    if not os.path.isfile(cfg_path):
+        return []
+
+    config = configparser.ConfigParser()
+    config.read(cfg_path, encoding="utf-8")
+
+    llm_defaults: dict = {}
+    if config.has_section("llm"):
+        llm_defaults["base_url"] = config["llm"].get("url", "").strip()
+        llm_defaults["api_key"] = config["llm"].get("api-key", "").strip()
+        llm_defaults["model_id"] = config["llm"].get("model-id", "").strip()
+
+    if not config.has_section("models"):
+        return []
+
+    model_names_raw = config["models"].get("list", "")
+    model_names = [n.strip() for n in model_names_raw.split(",") if n.strip()]
+
+    models: list[dict] = []
+    for name in model_names:
+        section = f"model.{name}"
+        entry: dict = {
+            "name": name,
+            "model_id": llm_defaults.get("model_id", DEFAULT_MODEL),
+            "base_url": llm_defaults.get("base_url", DEFAULT_BASE_URL),
+            "api_key": llm_defaults.get("api_key", DEFAULT_API_KEY),
+        }
+
+        if config.has_section(section):
+            entry["model_id"] = config[section].get("model-id", entry["model_id"]).strip() or entry["model_id"]
+            entry["base_url"] = config[section].get("url", entry["base_url"]).strip() or entry["base_url"]
+            entry["api_key"] = config[section].get("api-key", entry["api_key"]).strip() or entry["api_key"]
+
+        models.append(entry)
+
+    return models
 
 
 def load_questions(path: str) -> list[str]:
@@ -88,21 +136,14 @@ def load_questions(path: str) -> list[str]:
     return questions
 
 
-def run_question(
-    client: OpenAI,
-    model: str,
-    question: str,
-    question_index: int,
-) -> dict:
+def run_question(client: OpenAI, model: str, question: str) -> dict:
     """Send a single question to the LLM and return the response with metrics."""
     start_time = time.time()
 
     try:
         response = client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "user", "content": question},
-            ],
+            messages=[{"role": "user", "content": question}],
             stream=True,
         )
 
@@ -117,11 +158,9 @@ def run_question(
             if not choice:
                 continue
 
-            # Accumulate answer text
             if choice.delta and choice.delta.content:
                 answer_parts.append(choice.delta.content)
 
-            # Extract usage from chunk (some servers include per-chunk usage)
             if chunk.usage:
                 if chunk.usage.prompt_tokens:
                     prompt_tokens += chunk.usage.prompt_tokens
@@ -138,8 +177,6 @@ def run_question(
         duration = end_time - start_time
         answer = "".join(answer_parts)
 
-        # If usage was not available per-chunk, try to get it from a non-streaming call
-        # Some endpoints only return usage on the final chunk or not at all with streaming
         if completion_tokens == 0:
             usage_result = client.chat.completions.create(
                 model=model,
@@ -156,7 +193,6 @@ def run_question(
                     if hasattr(details, "accepted_prediction_tokens") and details.accepted_prediction_tokens is not None:
                         response_tokens = details.accepted_prediction_tokens or 0
 
-        # Calculate response tokens as completion - thinking (if we have both)
         if completion_tokens > 0 and response_tokens == 0:
             response_tokens = completion_tokens - thinking_tokens
 
@@ -166,7 +202,7 @@ def run_question(
         result = {
             "question": question,
             "answer": answer,
-            "model": model,
+            "model_id": model,
             "metrics": {
                 "duration_seconds": round(duration, 3),
                 "prompt_tokens": prompt_tokens,
@@ -184,7 +220,7 @@ def run_question(
         result = {
             "question": question,
             "answer": f"ERROR: {e}",
-            "model": model,
+            "model_id": model,
             "metrics": {
                 "duration_seconds": round(end_time - start_time, 3),
                 "prompt_tokens": 0,
@@ -201,15 +237,16 @@ def run_question(
     return result
 
 
-def save_result(result: dict, output_dir: str, question_index: int) -> str:
+def sanitize_name(name: str, max_len: int = 80) -> str:
+    """Sanitize a string for use as a filename component."""
+    return "".join(c if c.isalnum() or c in ("-", "_", ".") else "_" for c in name[:max_len])
+
+
+def save_result(result: dict, output_dir: str, question_index: int, model_name: str) -> str:
     """Save a single question/result to a file. Returns the file path."""
     os.makedirs(output_dir, exist_ok=True)
 
-    # Sanitize filename from the question
-    safe_name = "".join(
-        c if c.isalnum() or c in ("-", "_", ".") else "_"
-        for c in result["question"][:80]
-    )
+    safe_name = sanitize_name(result["question"])
     filename = f"q{question_index:03d}_{safe_name}.json"
     filepath = os.path.join(output_dir, filename)
 
@@ -219,8 +256,8 @@ def save_result(result: dict, output_dir: str, question_index: int) -> str:
     return filepath
 
 
-def save_summary(results: list[dict], output_dir: str) -> str:
-    """Save a summary of all results to a JSON file."""
+def save_summary(results: list[dict], output_dir: str, model_name: str) -> str:
+    """Save a summary of all results for one model to a JSON file."""
     os.makedirs(output_dir, exist_ok=True)
     filepath = os.path.join(output_dir, "summary.json")
 
@@ -231,8 +268,9 @@ def save_summary(results: list[dict], output_dir: str) -> str:
     total_prompt = sum(r["metrics"]["prompt_tokens"] for r in results)
 
     summary = {
+        "model_name": model_name,
+        "model_id": results[0].get("model_id", "") if results else "",
         "total_questions": len(results),
-        "model": results[0]["model"] if results else "",
         "aggregate_metrics": {
             "total_duration_seconds": round(total_duration, 3),
             "avg_duration_seconds": round(total_duration / len(results), 3) if results else 0,
@@ -253,70 +291,132 @@ def save_summary(results: list[dict], output_dir: str) -> str:
     return filepath
 
 
+def save_cross_model_summary(model_summaries: list[dict], output_dir: str) -> str:
+    """Save a cross-model comparison summary."""
+    filepath = os.path.join(output_dir, "comparison.json")
+
+    comparison = {
+        "models_tested": len(model_summaries),
+        "per_model": [],
+        "rankings": {},
+        "timestamp": datetime.now().isoformat(),
+    }
+
+    for summary in model_summaries:
+        agg = summary["aggregate_metrics"]
+        comparison["per_model"].append({
+            "model_name": summary["model_name"],
+            "model_id": summary["model_id"],
+            "total_questions": summary["total_questions"],
+            **agg,
+        })
+
+    # Rank by response tokens per second (highest first)
+    ranked = sorted(comparison["per_model"], key=lambda x: x.get("avg_response_tokens_per_second", 0), reverse=True)
+    for rank, entry in enumerate(ranked, start=1):
+        comparison["rankings"][f"#{rank}"] = {
+            "model_name": entry["model_name"],
+            "avg_response_tps": entry["avg_response_tokens_per_second"],
+        }
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(comparison, f, indent=2, ensure_ascii=False)
+
+    return filepath
+
+
+def run_model_benchmark(
+    model: dict,
+    questions: list[str],
+    output_base_dir: str,
+) -> dict | None:
+    """Run all questions against a single model. Returns summary dict."""
+    model_name = model["name"]
+    safe_model = sanitize_name(model_name)
+    output_dir = os.path.join(output_base_dir, safe_model)
+
+    client = OpenAI(base_url=model["base_url"], api_key=model["api_key"])
+
+    print(f"\n{'='*60}")
+    print(f"MODEL: {model_name} ({model['model_id']})")
+    print(f"URL:   {model['base_url']}")
+    print(f"Out:   {output_dir}/")
+    print(f"{'='*60}")
+
+    results: list[dict] = []
+    for idx, question in enumerate(questions, start=1):
+        print(f"  [{idx}/{len(questions)}] Sending question...")
+
+        result = run_question(client, model["model_id"], question)
+
+        preview = result["answer"][:120]
+        if len(result["answer"]) > 120:
+            preview += "..."
+        print(f"    Preview: {preview}")
+        print(f"    Duration: {result['metrics']['duration_seconds']}s  |  "
+              f"Response TPS: {result['metrics']['response_tokens_per_second']}  |  "
+              f"Tokens: thinking={result['metrics']['thinking_tokens']} "
+              f"response={result['metrics']['response_tokens']} "
+              f"completion={result['metrics']['completion_tokens']}")
+
+        filepath = save_result(result, output_dir, idx, model_name)
+        result["_file"] = filepath
+        results.append(result)
+        print(f"    Saved:  {filepath}")
+
+    if results:
+        summary_path = save_summary(results, output_dir, model_name)
+        print(f"\n  Summary saved: {summary_path}")
+
+        agg = json.load(open(summary_path))["aggregate_metrics"]
+        print(f"  Total: {agg['total_prompt_tokens']} prompt tokens, "
+              f"{agg['total_completion_tokens']} completion tokens")
+        print(f"  Thinking: {agg['total_thinking_tokens']} | Response: {agg['total_response_tokens']}")
+        print(f"  Avg response TPS: {agg['avg_response_tokens_per_second']}")
+        print(f"  Total duration: {agg['total_duration_seconds']}s")
+
+        return json.load(open(summary_path))
+
+    return None
+
+
 def main():
-    config = load_config()
+    config_path_arg = None
 
     parser = argparse.ArgumentParser(
-        description="Benchmark a local LLM running on an OpenAI-compatible endpoint.",
+        description="Benchmark local LLMs on OpenAI-compatible endpoints.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-  # Single question (uses config.ini for model/endpoint if present)
-  python benchmark.py --prompt "What is 2+2?"
+  # Use models from config.ini [models] section
+  python benchmark.py --questions questions.txt
 
-  # Questions from a text file (one per line)
-  python benchmark.py --questions questions.txt --model qwen3-8b
+  # Test a single model directly
+  python benchmark.py --prompt "What is 2+2?" --model qwen3-8b
 
-  # Override config.ini with CLI flags
+  # Override config with CLI flags
   python benchmark.py --prompt "Hello" -m my-model -u http://localhost:8080/v1
         """,
     )
 
-    parser.add_argument(
-        "--prompt", "-p",
-        type=str,
-        help="A single question to ask the model",
-    )
-    parser.add_argument(
-        "--questions", "-q",
-        type=str,
-        help="Path to a file with questions (text: one per line, or JSON/JSONL)",
-    )
-    parser.add_argument(
-        "--model", "-m",
-        type=str,
-        default=None,
-        help="Model ID to use (overrides config.ini)",
-    )
-    parser.add_argument(
-        "--base-url", "-u",
-        type=str,
-        default=None,
-        help="OpenAI-compatible endpoint URL (overrides config.ini)",
-    )
-    parser.add_argument(
-        "--api-key", "-k",
-        type=str,
-        default=None,
-        help="API key (overrides config.ini)",
-    )
-    parser.add_argument(
-        "--output-dir", "-o",
-        type=str,
-        default=DEFAULT_OUTPUT_DIR,
-        help=f"Directory to save result files (default: {DEFAULT_OUTPUT_DIR})",
-    )
-    parser.add_argument(
-        "--config", "-c",
-        type=str,
-        default=None,
-        help=f"Path to config file (default: {CONFIG_FILENAME})",
-    )
+    parser.add_argument("--prompt", "-p", type=str, help="A single question to ask the model")
+    parser.add_argument("--questions", "-q", type=str, help="Path to a questions file (text, JSON, or JSONL)")
+    parser.add_argument("--model", "-m", type=str, default=None, help="Model ID to use (overrides config.ini)")
+    parser.add_argument("--base-url", "-u", type=str, default=None, help="Endpoint URL (overrides config.ini)")
+    parser.add_argument("--api-key", "-k", type=str, default=None, help="API key (overrides config.ini)")
+    parser.add_argument("--output-dir", "-o", type=str, default=DEFAULT_OUTPUT_DIR,
+                        help=f"Directory to save result files (default: {DEFAULT_OUTPUT_DIR})")
+    parser.add_argument("--config", "-c", type=str, default=None, help=f"Path to config file (default: {CONFIG_FILENAME})")
 
     args = parser.parse_args()
 
-    # Merge: CLI args take precedence over config, then defaults
-    model = args.model or config.get("model") or DEFAULT_MODEL
+    if args.config:
+        config_path_arg = args.config
+
+    config = load_config(config_path_arg)
+    models_from_config = load_models(config_path_arg)
+
+    # Merge: CLI overrides, then config, then defaults
     base_url = args.base_url or config.get("base_url") or DEFAULT_BASE_URL
     api_key = args.api_key or config.get("api_key") or DEFAULT_API_KEY
 
@@ -337,58 +437,59 @@ Examples:
         print("Error: No questions to process")
         sys.exit(1)
 
-    # Initialize client
-    client = OpenAI(
-        base_url=base_url,
-        api_key=api_key,
-    )
+    # Determine which models to test
+    models_to_test: list[dict] = []
 
-    print(f"Endpoint: {base_url}")
-    print(f"Model:    {model}")
+    if models_from_config:
+        # Use models from config.ini [models] section
+        models_to_test = models_from_config
+    elif args.model:
+        # Single model from CLI
+        models_to_test = [{
+            "name": args.model,
+            "model_id": args.model,
+            "base_url": base_url,
+            "api_key": api_key,
+        }]
+    else:
+        # Fall back to model from [llm] section
+        model_id = config.get("model") or DEFAULT_MODEL
+        models_to_test = [{
+            "name": model_id,
+            "model_id": model_id,
+            "base_url": base_url,
+            "api_key": api_key,
+        }]
+
+    print(f"Models:    {len(models_to_test)}")
+    for m in models_to_test:
+        print(f"  - {m['name']} ({m['model_id']}) @ {m['base_url']}")
     print(f"Questions: {len(questions)}")
     print(f"Output:    {args.output_dir}/")
-    print("-" * 60)
 
-    results: list[dict] = []
-    for idx, question in enumerate(questions, start=1):
-        print(f"[{idx}/{len(questions)}] Sending question...")
+    # Run benchmarks for each model
+    model_summaries: list[dict] = []
+    for model in models_to_test:
+        summary = run_model_benchmark(model, questions, args.output_dir)
+        if summary:
+            model_summaries.append(summary)
 
-        result = run_question(client, model, question, idx)
+    # Cross-model comparison
+    if len(model_summaries) > 1:
+        comp_path = save_cross_model_summary(model_summaries, args.output_dir)
+        print(f"\n{'='*60}")
+        print(f"CROSS-MODEL COMPARISON")
+        print(f"{'='*60}")
 
-        # Print truncated answer preview
-        preview = result["answer"][:120]
-        if len(result["answer"]) > 120:
-            preview += "..."
-        print(f"  Preview: {preview}")
-        print(f"  Duration: {result['metrics']['duration_seconds']}s  |  "
-              f"Response TPS: {result['metrics']['response_tokens_per_second']}  |  "
-              f"Tokens: thinking={result['metrics']['thinking_tokens']} "
-              f"response={result['metrics']['response_tokens']} "
-              f"completion={result['metrics']['completion_tokens']}")
+        comp = json.load(open(comp_path))
+        for rank_key, rank_info in comp["rankings"].items():
+            marker = " <-- FASTEST" if rank_key == "#1" else ""
+            print(f"  {rank_key} {rank_info['model_name']}: "
+                  f"{rank_info['avg_response_tps']} tokens/s{marker}")
 
-        filepath = save_result(result, args.output_dir, idx)
-        result["_file"] = filepath
-        results.append(result)
+        print(f"\n  Saved: {comp_path}")
 
-        print(f"  Saved:  {filepath}")
-        print()
-
-    # Save summary
-    if results:
-        summary_path = save_summary(results, args.output_dir)
-        print(f"Summary saved: {summary_path}")
-
-        # Print aggregate stats
-        agg = json.load(open(summary_path))["aggregate_metrics"]
-        print("-" * 60)
-        print(f"Total questions:   {agg['total_prompt_tokens']} prompt tokens, "
-              f"{agg['total_completion_tokens']} completion tokens")
-        print(f"Total thinking:    {agg['total_thinking_tokens']} | "
-              f"Total response:    {agg['total_response_tokens']}")
-        print(f"Avg response TPS:  {agg['avg_response_tokens_per_second']}")
-        print(f"Total duration:    {agg['total_duration_seconds']}s")
-
-    print("-" * 60)
+    print(f"\n{'='*60}")
     print("Done.")
 
 

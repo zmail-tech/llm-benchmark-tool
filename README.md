@@ -1,14 +1,15 @@
 # LLM Benchmark Tool
 
-A Python script for benchmarking local LLMs running on OpenAI-compatible endpoints. Sends a series of questions, captures responses, and records detailed performance metrics.
+A Python script for benchmarking local LLMs running on OpenAI-compatible endpoints. Sends a series of questions, captures responses, and records detailed performance metrics. Supports testing multiple models in a single run with a cross-model comparison.
 
 ## Features
 
-- Configure model, endpoint URL, and API key in a `config.ini` file (or override with CLI flags)
-- Load questions from plain text (one per line), JSON, or JSONL files
+- **Multi-model benchmarking** — test multiple models back-to-back and get a ranked comparison
 - Per-question metrics: duration, prompt/response tokens per second, thinking tokens, response tokens, and completion tokens
-- Each question/response saved as a separate JSON file
-- Aggregate summary across all questions
+- Each question/response saved as a separate JSON file per model
+- Aggregate summary per model + cross-model comparison file
+- Configure models, endpoints, and API keys in `config.ini` (or override with CLI flags)
+- Load questions from plain text (one per line), JSON, or JSONL files
 
 ## Installation
 
@@ -26,29 +27,65 @@ Requires Python 3.9+.
 cp config.ini.example config.ini
 ```
 
-2. Edit `config.ini` with your LLM endpoint settings:
+2. Edit `config.ini` with your LLM endpoint settings and model list:
 
 ```ini
 [llm]
-model-id = Qwen-Lite-Deepseek
 url = http://192.168.1.210:8000/v1
 api-key = your-api-key
+
+[models]
+list = ModelA, ModelB
+
+[model.ModelA]
+model-id = ModelA
+
+[model.ModelB]
+model-id = ModelB
 ```
 
-2. Add questions to `questions.txt` (one per line), or create your own question file.
+3. Add questions to `questions.txt` (one per line).
 
-3. Run:
+4. Run:
 
 ```bash
 python benchmark.py -q questions.txt
 ```
 
+## Configuring Multiple Models
+
+Add a `[models]` section with a `list` of model names (comma-separated), then define each model in a `[model.<name>]` section. Models inherit the URL and API key from the `[llm]` section by default but can override them individually.
+
+```ini
+[llm]
+url = http://192.168.1.210:8000/v1
+api-key = your-api-key
+
+[models]
+list = Qwen-Lite-Deepseek, DeepSeek-R1
+
+[model.Qwen-Lite-Deepseek]
+model-id = Qwen-Lite-Deepseek
+
+[model.DeepSeek-R1]
+model-id = DeepSeek-R1
+url = http://192.168.1.210:8001/v1
+```
+
+If no `[models]` section is found, the tool falls back to a single model from the `[llm]` section's `model-id`.
+
 ## Usage
 
-### Single Question
+### Single Model (CLI override)
 
 ```bash
-python benchmark.py -p "What is 2+2?"
+python benchmark.py -p "What is 2+2?" -m qwen3-8b
+```
+
+### Multiple Models (from config)
+
+```bash
+python benchmark.py -q questions.txt
 ```
 
 ### Questions from a File
@@ -96,26 +133,30 @@ python benchmark.py -q questions.txt -o my_results
 
 ## Output
 
-### Per-Question Files
+### Directory Structure
 
-Each question is saved as a separate file in the output directory:
+Each model gets its own subdirectory under the output folder:
 
 ```
 results/
-  q001_Whats_a_good_simple_dinner_recipe.json
-  q002_My_8_year_old_keeps_asking.json
-  q003_Were_planning_a_weekend_trip.json
-  q004_Can_you_suggest_some_fun.json
-  summary.json
+  Qwen-Lite-Deepseek/
+    q001_Whats_a_good_simple_dinner_recipe.json
+    q002_My_8_year_old_keeps_asking.json
+    summary.json
+  DeepSeek-R1/
+    q001_Whats_a_good_simple_dinner_recipe.json
+    q002_My_8_year_old_keeps_asking.json
+    summary.json
+  comparison.json
 ```
 
-Each file contains:
+### Per-Question File
 
 ```json
 {
   "question": "What's a good, simple dinner recipe...",
   "answer": "Here's a simple pasta dish...",
-  "model": "Qwen-Lite-Deepseek",
+  "model_id": "Qwen-Lite-Deepseek",
   "metrics": {
     "duration_seconds": 4.523,
     "prompt_tokens": 25,
@@ -129,9 +170,13 @@ Each file contains:
 }
 ```
 
-### Summary
+### Per-Model Summary
 
-`summary.json` contains aggregate metrics across all questions, including total/average duration, total token counts, and average tokens per second.
+`summary.json` inside each model's folder contains aggregate metrics: total/average duration, token counts, and average tokens per second.
+
+### Cross-Model Comparison
+
+`comparison.json` at the output root contains a ranked comparison of all models tested, ordered by response tokens per second (highest first).
 
 ## Token Counting
 
