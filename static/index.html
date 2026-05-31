@@ -80,10 +80,10 @@ details summary{cursor:pointer;font-weight:600;padding:8px 0}
       <input type="text" id="am-name" placeholder="Model name">
       <label for="am-model-id">Model ID</label>
       <input type="text" id="am-model-id" placeholder="Model ID (defaults to name)">
-      <label for="am-base-url">Base URL (optional, inherits default)</label>
-      <input type="text" id="am-base-url" placeholder="http://localhost:8000/v1">
-      <label for="am-api-key">API Key (optional, inherits default)</label>
-      <input type="password" id="am-api-key" placeholder="API key">
+      <label for="am-base-url">Base URL *</label>
+      <input type="text" id="am-base-url" placeholder="http://localhost:8000/v1" required>
+      <label for="am-api-key">API Key *</label>
+      <input type="password" id="am-api-key" placeholder="API key" required>
       <button onclick="addModel()">Add</button>
     </div>
   </div>
@@ -215,16 +215,16 @@ function renderModels(models) {
           <button class="sm danger" onclick="deleteModel(${m.id})">&times;</button>
         </div>
       </div>
-      <div class="text-sm">Model ID: ${m.model_id} | URL: ${m.base_url || '(inherits)'} | Key: ${m.api_key_set ? 'set' : '(inherits)'}</div>
+      <div class="text-sm">Model ID: ${m.model_id} | URL: ${m.base_url || '<span class="warn">(missing)</span>'} | Key: ${m.api_key_set ? 'set' : '<span class="warn">(missing)</span>'}</div>
       <div class="model-edit" id="model-edit-${m.id}">
         <label for="med-name-${m.id}">Model Name</label>
         <input type="text" id="med-name-${m.id}" value="${m.name}">
         <label for="med-model-id-${m.id}">Model ID</label>
         <input type="text" id="med-model-id-${m.id}" value="${m.model_id}">
-        <label for="med-base-url-${m.id}">Base URL (blank to inherit)</label>
-        <input type="text" id="med-base-url-${m.id}" value="${m.base_url || ''}" placeholder="Inherits default">
-        <label for="med-api-key-${m.id}">API Key (blank to inherit)</label>
-        <input type="password" id="med-api-key-${m.id}" placeholder="Leave blank to keep current">
+        <label for="med-base-url-${m.id}">Base URL *</label>
+        <input type="text" id="med-base-url-${m.id}" value="${m.base_url || ''}" placeholder="http://localhost:8000/v1">
+        <label for="med-api-key-${m.id}">API Key (leave blank to keep current)</label>
+        <input type="password" id="med-api-key-${m.id}" placeholder="API key">
         <button class="sm" onclick="saveModelEdit(${m.id})">Save</button>
       </div>`;
     el.appendChild(card);
@@ -256,13 +256,18 @@ function addModel() {
   const name = document.getElementById('am-name').value.trim();
   if (!name) return;
 
+  const base_url = document.getElementById('am-base-url').value.trim();
+  if (!base_url) { alert('Base URL is required.'); return; }
+
+  const apiKey = document.getElementById('am-api-key').value.trim();
+  if (!apiKey) { alert('API Key is required.'); return; }
+
   const body = {
     name: name,
     model_id: document.getElementById('am-model-id').value.trim() || name,
-    base_url: document.getElementById('am-base-url').value.trim() || null,
+    base_url: base_url,
+    api_key: apiKey,
   };
-  const apiKey = document.getElementById('am-api-key').value.trim();
-  if (apiKey) body.api_key = apiKey;
 
   document.getElementById('am-name').value = '';
   document.getElementById('am-model-id').value = '';
@@ -290,10 +295,13 @@ function deleteModel(id) {
 }
 
 function saveModelEdit(id) {
+  const base_url = document.getElementById('med-base-url-' + id).value.trim();
+  if (!base_url) { alert('Base URL is required.'); return; }
+
   const payload = {
     name: document.getElementById('med-name-' + id).value.trim(),
     model_id: document.getElementById('med-model-id-' + id).value.trim(),
-    base_url: document.getElementById('med-base-url-' + id).value.trim() || null,
+    base_url: base_url,
   };
   const apiKey = document.getElementById('med-api-key-' + id).value.trim();
   if (apiKey) payload.api_key = apiKey;

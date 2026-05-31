@@ -171,9 +171,6 @@ def set_default_settings(conn):
         return
 
     defaults = {
-        "llm_url": "",
-        "llm_api_key": "",
-        "llm_model": "",
         "eval_url": "",
         "eval_api_key": "",
         "eval_model_id": "",

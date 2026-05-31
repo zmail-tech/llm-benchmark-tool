@@ -30,13 +30,13 @@ def _write_progress(kind: str, current: int, total: int):
     }
 
 
-def _resolve_model(model: dict, llm_url: str = "", llm_api_key: str = "") -> dict:
-    """Resolve a model's base_url and api_key from DB defaults if null."""
+def _resolve_model(model: dict) -> dict:
+    """Return a model's resolved config. Requires base_url and api_key."""
     return {
         "name": model["name"],
         "model_id": model["model_id"],
-        "base_url": model["base_url"] or llm_url or bm.DEFAULT_BASE_URL,
-        "api_key": model["api_key"] or llm_api_key or bm.DEFAULT_API_KEY,
+        "base_url": model["base_url"],
+        "api_key": model["api_key"],
     }
 
 
@@ -47,10 +47,6 @@ def _run_benchmark_bg(output_dir, questions, model_names):
     _state["benchmark"]["output_dir"] = output_dir
     conn = dbmod.get_db()
     try:
-        # Get settings
-        llm_url = dbmod.get_setting(conn, "llm_url") or bm.DEFAULT_BASE_URL
-        llm_api_key = dbmod.get_setting(conn, "llm_api_key") or bm.DEFAULT_API_KEY
-
         # Get models
         all_models = dbmod.get_models(conn)
 
@@ -60,17 +56,16 @@ def _run_benchmark_bg(output_dir, questions, model_names):
             models_to_test = all_models
 
         if not models_to_test:
-            llm_model = dbmod.get_setting(conn, "llm_model") or bm.DEFAULT_MODEL
-            models_to_test = [{
-                "id": 0,
-                "name": llm_model,
-                "model_id": llm_model,
-                "base_url": llm_url,
-                "api_key": llm_api_key,
-            }]
+            raise ValueError("No models configured. Add at least one model in Configure tab.")
 
-        # Resolve models with inheritance
-        resolved_models = [_resolve_model(m, llm_url, llm_api_key) for m in models_to_test]
+        # Validate all models have required fields
+        for m in models_to_test:
+            if not m["base_url"]:
+                raise ValueError(f"Model '{m['name']}' is missing a Base URL.")
+            if not m["api_key"]:
+                raise ValueError(f"Model '{m['name']}' is missing an API Key.")
+
+        resolved_models = [_resolve_model(m) for m in models_to_test]
         total_steps = len(questions) * len(resolved_models)
 
         _write_progress("benchmark", 0, total_steps)
@@ -224,10 +219,6 @@ def get_config():
     """Return current configuration (without API keys)."""
     conn = dbmod.get_db()
     try:
-        llm_url = dbmod.get_setting(conn, "llm_url") or ""
-        llm_model = dbmod.get_setting(conn, "llm_model") or ""
-        llm_api_key = dbmod.get_setting(conn, "llm_api_key") or ""
-
         eval_url = dbmod.get_setting(conn, "eval_url") or ""
         eval_model_id = dbmod.get_setting(conn, "eval_model_id") or ""
         eval_api_key = dbmod.get_setting(conn, "eval_api_key") or ""
@@ -247,11 +238,6 @@ def get_config():
             })
 
         return jsonify({
-            "llm": {
-                "url": llm_url,
-                "model": llm_model,
-                "api_key_set": bool(llm_api_key and llm_api_key != bm.DEFAULT_API_KEY),
-            },
             "models": safe_models,
             "eval": {
                 "url": eval_url,
@@ -274,14 +260,6 @@ def update_config():
 
     conn = dbmod.get_db()
     try:
-        if "llm" in data:
-            if "url" in data["llm"]:
-                dbmod.set_setting(conn, "llm_url", data["llm"]["url"])
-            if "model" in data["llm"]:
-                dbmod.set_setting(conn, "llm_model", data["llm"]["model"])
-            if "api_key" in data["llm"]:
-                dbmod.set_setting(conn, "llm_api_key", data["llm"]["api_key"])
-
         if "eval" in data:
             if "url" in data["eval"]:
                 dbmod.set_setting(conn, "eval_url", data["eval"]["url"])
@@ -529,8 +507,12 @@ def add_model_api():
         return jsonify({"error": "Model name is required"}), 400
 
     model_id_val = data.get("model_id", name)
-    base_url = data.get("base_url") or None
-    api_key = data.get("api_key") or None
+    base_url = data.get("base_url")
+    api_key = data.get("api_key")
+    if not base_url:
+        return jsonify({"error": "Base URL is required for every model."}), 400
+    if not api_key:
+        return jsonify({"error": "API Key is required for every model."}), 400
 
     conn = dbmod.get_db()
     try:
@@ -570,11 +552,15 @@ def update_model_api(model_id):
         if not model:
             return jsonify({"error": "Model not found"}), 404
 
+        new_base_url = data.get("base_url")
+        if new_base_url is not None and not new_base_url:
+            return jsonify({"error": "Base URL cannot be cleared."}), 400
+
         dbmod.update_model(
             conn, model_id,
             name=data.get("name"),
             model_id_val=data.get("model_id"),
-            base_url=data.get("base_url"),
+            base_url=new_base_url,
             api_key=data.get("api_key"),
         )
         conn.commit()
