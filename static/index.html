@@ -72,19 +72,6 @@ details summary{cursor:pointer;font-weight:600;padding:8px 0}
 <!-- CONFIGURE TAB -->
 <div class="content" id="tab-configure">
   <div class="card">
-    <h2>Connection Settings</h2>
-    <label for="cfg-url">Endpoint URL</label>
-    <input type="text" id="cfg-url" placeholder="http://localhost:8000/v1">
-    <label for="cfg-model">Default Model ID</label>
-    <input type="text" id="cfg-model" placeholder="model-id">
-    <div class="api-key-row">
-      <label for="cfg-api-key">API Key</label>
-      <input type="password" id="cfg-api-key" placeholder="Enter API key (leave blank to keep current)">
-      <span id="cfg-api-status" class="text-sm"></span>
-    </div>
-  </div>
-
-  <div class="card">
     <h2>Models to Test</h2>
     <div id="cfg-models-list"></div>
     <button class="mt16" onclick="showAddModel()">Add Model</button>
@@ -199,9 +186,6 @@ let configData = null;
 function loadConfig() {
   fetch('/api/config').then(r => r.json()).then(data => {
     configData = data;
-    document.getElementById('cfg-url').value = data.llm.url || '';
-    document.getElementById('cfg-model').value = data.llm.model || '';
-    document.getElementById('cfg-api-status').textContent = data.llm.api_key_set ? 'API key configured' : 'No API key set';
     document.getElementById('cfg-eval-url').value = data.eval.url || '';
     document.getElementById('cfg-eval-model').value = data.eval.model_id || '';
     document.getElementById('cfg-eval-api-status').textContent = data.eval.api_key_set ? 'API key configured' : 'No API key set';
@@ -338,16 +322,10 @@ function removeCriterion(idx) {
 
 function saveConfig() {
   if (!configData) return;
-  configData.llm.url = document.getElementById('cfg-url').value.trim();
-  configData.llm.model = document.getElementById('cfg-model').value.trim();
   configData.eval.url = document.getElementById('cfg-eval-url').value.trim();
   configData.eval.model_id = document.getElementById('cfg-eval-model').value.trim();
 
   const body = {
-    llm: {
-      url: configData.llm.url,
-      model: configData.llm.model,
-    },
     eval: {
       url: configData.eval.url,
       model_id: configData.eval.model_id,
@@ -362,9 +340,6 @@ function saveConfig() {
     })),
   };
 
-  const llmKey = document.getElementById('cfg-api-key').value.trim();
-  if (llmKey) body.llm.api_key = llmKey;
-
   const evalKey = document.getElementById('cfg-eval-api-key').value.trim();
   if (evalKey) body.eval.api_key = evalKey;
 
@@ -377,7 +352,6 @@ function saveConfig() {
       alert('Error: ' + d.error);
       return;
     }
-    document.getElementById('cfg-api-key').value = '';
     document.getElementById('cfg-eval-api-key').value = '';
     loadConfig();
   });
