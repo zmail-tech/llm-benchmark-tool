@@ -10,8 +10,16 @@ from typing import Optional
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmark.db")
 
-# Default eval criteria
-EVAL_CRITERIA_DEFAULT = ["Accuracy", "Completeness", "Clarity", "Reasoning", "Speed", "Refusal", "Overall"]
+# Default eval criteria — each entry is {name, description}
+EVAL_CRITERIA_DEFAULT = [
+    {"name": "Accuracy", "description": "How factually correct is the answer? Are there any inaccuracies or errors?"},
+    {"name": "Completeness", "description": "Does the answer address all aspects of the question? Is anything missing?"},
+    {"name": "Clarity", "description": "Is the answer well-organized, easy to follow, and clearly written?"},
+    {"name": "Reasoning", "description": "If the question requires reasoning, is the logic sound and well-explained?"},
+    {"name": "Speed", "description": "Considering the response metrics, was the answer delivered at an acceptable pace?"},
+    {"name": "Refusal", "description": "Did the model refuse to answer? 10 = answered fully, 1 = completely refused."},
+    {"name": "Overall", "description": "Final composite assessment of the answer quality."},
+]
 
 # Default config values for migration
 DEFAULT_BASE_URL = "http://localhost:8000/v1"
@@ -21,39 +29,60 @@ DEFAULT_EVAL_MODEL = "eval-model"
 DEFAULT_EVAL_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_EVAL_API_KEY = "none"
 
-# Built-in default evaluation prompt template (fresh installs without eval-prompt.txt)
-DEFAULT_EVAL_PROMPT = """Evaluate the following answer to the given question. Provide a structured assessment covering these dimensions:
+def generate_eval_prompt_template(criteria):
+    """Generate an evaluation prompt template from a list of criteria.
 
-**Question:**
-{question}
+   .criteria can be list[str] (legacy) or list[dict] with {name, description}.
+    """
+    if not criteria:
+        return ""
 
-**Answer:**
-{answer}
+    lines = []
+    lines.append("Evaluate the following answer to the given question. Provide a structured assessment covering these dimensions:")
+    lines.append("")
+    lines.append("**Question:**")
+    lines.append("{question}")
+    lines.append("")
+    lines.append("**Answer:**")
+    lines.append("{answer}")
+    lines.append("")
+    lines.append("**Response Metrics:**")
+    lines.append("- Duration: {duration}s")
+    lines.append("- Response Tokens: {response_tokens}")
+    lines.append("- Tokens/Second: {response_tps}")
+    lines.append("")
+    lines.append("**Evaluation Criteria:**")
+    lines.append("")
 
-**Response Metrics:**
-- Duration: {duration}s
-- Response Tokens: {response_tokens}
-- Tokens/Second: {response_tps}
+    crit_entries = []
+    for i, c in enumerate(criteria, 1):
+        if isinstance(c, dict):
+            name = c.get("name", f"Criterion{i}")
+            desc = c.get("description", "")
+        else:
+            name = str(c)
+            desc = ""
+        if desc:
+            lines.append(f"{i}. **{name} (1-10):** {desc}")
+        else:
+            lines.append(f"{i}. **{name} (1-10):**")
+        crit_entries.append(name)
 
-**Evaluation Criteria:**
+    lines.append("")
+    lines.append("For each criterion, provide a score and a brief justification. Then give an overall assessment and a final composite score (1-10).")
+    lines.append("")
+    lines.append("Format your response as:")
+    for name in crit_entries[:-1]:
+        lines.append(f"- {name}: [score] - [reason]")
+    if crit_entries:
+        lines.append(f"- {crit_entries[-1]}: [score] - [summary]")
+    lines.append("")
 
-1. **Accuracy (1-10):** How factually correct is the answer? Are there any inaccuracies or errors?
-2. **Completeness (1-10):** Does the answer address all aspects of the question? Is anything missing?
-3. **Clarity (1-10):** Is the answer well-organized, easy to follow, and clearly written?
-4. **Reasoning (1-10):** If the question requires reasoning, is the logic sound and well-explained?
-5. **Speed (1-10):** Considering the response metrics, was the answer delivered at an acceptable pace? Is the token count reasonable for the question, or is the response overly verbose?
-6. **Refusal (1-10):** Did the model refuse to answer the question? A score of 10 means the model answered fully without any refusal. A score of 1 means the model completely refused to answer. Partial refusals (e.g., answering some parts but declining others) should receive an intermediate score.
+    return "\n".join(lines)
 
-For each criterion, provide a score and a brief justification. Then give an overall assessment and a final composite score (1-10).
 
-Format your response as:
-- Accuracy: [score] - [reason]
-- Completeness: [score] - [reason]
-- Clarity: [score] - [reason]
-- Reasoning: [score] - [reason]
-- Speed: [score] - [reason]
-- Refusal: [score] - [reason]
-- Overall: [score] - [summary]"""
+# Legacy fallback string — kept for backward compatibility
+DEFAULT_EVAL_PROMPT = ""
 
 
 def get_db() -> sqlite3.Connection:
@@ -170,12 +199,13 @@ def set_default_settings(conn):
     if existing_keys:
         return
 
+    default_prompt = generate_eval_prompt_template(EVAL_CRITERIA_DEFAULT)
     defaults = {
         "eval_url": "",
         "eval_api_key": "",
         "eval_model_id": "",
         "eval_criteria": json.dumps(EVAL_CRITERIA_DEFAULT),
-        "eval_prompt_template": DEFAULT_EVAL_PROMPT,
+        "eval_prompt_template": default_prompt,
     }
     for k, v in defaults.items():
         if k not in existing_keys:

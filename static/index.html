@@ -49,14 +49,22 @@ details summary{cursor:pointer;font-weight:600;padding:8px 0}
 .api-key-row input{padding-right:40px}
 .api-key-row .toggle-vis{position:absolute;right:8px;top:36px;cursor:pointer;font-size:.75rem;color:#6b7280;background:none;border:none;padding:4px}
 .api-key-row .key-status{position:absolute;right:8px;top:36px;font-size:.75rem;color:#065f46}
-.criteria-list{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
-.criteria-chip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:#e5e7eb;border-radius:9999px;font-size:.8rem}
-.criteria-chip button{background:none;color:#ef4444;padding:0 4px;font-size:1rem;line-height:1}
+   .criteria-list{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.criteria-chip{display:inline-flex;align-items:flex-start;gap:4px;padding:4px 10px;background:#e5e7eb;border-radius:9999px;font-size:.8rem}
+.criteria-chip button{background:none;color:#ef4444;padding:0 4px;font-size:1rem;line-height:1;margin-top:2px}
+.criteria-chip .crit-desc{font-size:.7rem;color:#6b7280;display:block;max-width:200px}
+.criteria-add-form{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.criteria-add-form input{flex:1;min-width:120px;margin-bottom:0}
+.criteria-add-form .criteria-add-desc{flex:2;min-width:200px}
 .model-card{border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:8px}
 .model-card .model-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
 .model-card .model-header h4{font-size:.9rem}
 .model-edit{display:none;margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb}
 .model-edit.open{display:block}
+.question-box{border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:8px}
+.question-box-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.question-box-header span{font-weight:600;font-size:.875rem}
+.question-box textarea{margin-bottom:0;min-height:80px}
 </style>
 </head>
 <body>
@@ -99,15 +107,16 @@ details summary{cursor:pointer;font-weight:600;padding:8px 0}
       <input type="password" id="cfg-eval-api-key" placeholder="Enter API key (leave blank to keep current)">
       <span id="cfg-eval-api-status" class="text-sm"></span>
     </div>
-    <label for="cfg-eval-criteria-add">Add Criterion</label>
-    <div class="flex">
-      <input type="text" id="cfg-eval-criteria-add" placeholder="New criterion name" style="margin-bottom:0">
+    <label>Add Criterion</label>
+    <div class="criteria-add-form">
+      <input type="text" id="cfg-eval-criteria-name" placeholder="Criterion name">
+      <input type="text" id="cfg-eval-criteria-desc" class="criteria-add-desc" placeholder="Description / instructions for the eval model">
       <button onclick="addCriterion()">Add</button>
     </div>
     <div class="criteria-list mt16" id="cfg-criteria"></div>
-    <label for="cfg-eval-prompt">Eval Prompt Template</label>
-    <textarea id="cfg-eval-prompt" style="min-height:200px;font-family:monospace;font-size:.8rem"></textarea>
-    <div class="text-sm">Placeholders: {question}, {answer}, {duration}, {response_tokens}, {response_tps}</div>
+    <label for="cfg-eval-prompt">Eval Prompt Template <span class="text-sm" style="font-weight:400">(auto-generated from criteria)</span></label>
+    <textarea id="cfg-eval-prompt" style="min-height:200px;font-family:monospace;font-size:.8rem" readonly></textarea>
+    <div class="text-sm">Prompt is auto-generated from the criteria above. Change criteria to update the prompt.</div>
   </div>
 
   <button onclick="saveConfig()">Save Configuration</button>
@@ -117,8 +126,9 @@ details summary{cursor:pointer;font-weight:600;padding:8px 0}
 <div class="content" id="tab-run" style="display:none">
   <div class="card">
     <h2>Run Benchmark</h2>
-    <label for="run-questions">Questions (one per line)</label>
-    <textarea id="run-questions" placeholder="What is 2+2?&#10;Explain quantum mechanics briefly."></textarea>
+    <div id="run-questions-container"></div>
+    <button class="mt16" onclick="addQuestionBox()">+ Add Question</button>
+    <div class="text-sm mb8">Add questions as separate boxes. Each box is one prompt passed to every selected model.</div>
     <label for="run-output-dir">Run Name</label>
     <input type="text" id="run-output-dir" placeholder="my-benchmark-run">
     <div class="text-sm mb8">Leave blank for auto-generated name.</div>
@@ -183,18 +193,76 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
 // ── Configure tab ──────────────────────────────────────────
 let configData = null;
 
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function generateEvalPromptTemplate(criteria) {
+  if (!criteria || !criteria.length) return '';
+  const lines = [];
+  lines.push('Evaluate the following answer to the given question. Provide a structured assessment covering these dimensions:');
+  lines.push('');
+  lines.push('**Question:**');
+  lines.push('{question}');
+  lines.push('');
+  lines.push('**Answer:**');
+  lines.push('{answer}');
+  lines.push('');
+  lines.push('**Response Metrics:**');
+  lines.push('- Duration: {duration}s');
+  lines.push('- Response Tokens: {response_tokens}');
+  lines.push('- Tokens/Second: {response_tps}');
+  lines.push('');
+  lines.push('**Evaluation Criteria:**');
+  lines.push('');
+  const names = [];
+  criteria.forEach((c, i) => {
+    const name = typeof c === 'string' ? c : c.name;
+    const desc = typeof c === 'string' ? '' : (c.description || '');
+    names.push(name);
+    if (desc) {
+      lines.push(`${i + 1}. **${name} (1-10):** ${desc}`);
+    } else {
+      lines.push(`${i + 1}. **${name} (1-10):**`);
+    }
+  });
+  lines.push('');
+  lines.push('For each criterion, provide a score and a brief justification. Then give an overall assessment and a final composite score (1-10).');
+  lines.push('');
+  lines.push('Format your response as:');
+  names.forEach((n, i) => {
+    if (i === names.length - 1) {
+      lines.push(`- ${n}: [score] - [summary]`);
+    } else {
+      lines.push(`- ${n}: [score] - [reason]`);
+    }
+  });
+  lines.push('');
+  return lines.join('\n');
+}
+
+function generatePromptPreview() {
+  if (configData && configData.eval_criteria) {
+    document.getElementById('cfg-eval-prompt').value = generateEvalPromptTemplate(configData.eval_criteria);
+  }
+}
+
 function loadConfig() {
   fetch('/api/config').then(r => r.json()).then(data => {
     configData = data;
+    // Normalize criteria to object format
+    configData.eval_criteria = (data.eval_criteria || []).map(c => {
+      if (typeof c === 'string') return { name: c, description: '' };
+      return c;
+    });
     document.getElementById('cfg-eval-url').value = data.eval.url || '';
     document.getElementById('cfg-eval-model').value = data.eval.model_id || '';
     document.getElementById('cfg-eval-api-status').textContent = data.eval.api_key_set ? 'API key configured' : 'No API key set';
 
     renderModels(data.models);
     renderCriteria(data.eval_criteria);
-
-    const prompt = data.eval_prompt_template || '';
-    document.getElementById('cfg-eval-prompt').value = prompt;
 
     updateRunModelSelect(data.models);
   });
@@ -235,11 +303,17 @@ function renderCriteria(criteria) {
   const el = document.getElementById('cfg-criteria');
   el.innerHTML = '';
   criteria.forEach((c, i) => {
+    const name = typeof c === 'string' ? c : c.name;
+    const desc = typeof c === 'string' ? '' : (c.description || '');
     const chip = document.createElement('span');
     chip.className = 'criteria-chip';
-    chip.innerHTML = `${c} <button onclick="removeCriterion(${i})">&times;</button>`;
+    let inner = `<strong>${esc(name)}</strong>`;
+    if (desc) inner += `<span class="crit-desc">${esc(desc)}</span>`;
+    inner += `<button onclick="removeCriterion(${i})">&times;</button>`;
+    chip.innerHTML = inner;
     el.appendChild(chip);
   });
+  generatePromptPreview();
 }
 
 function toggleModelEdit(id) {
@@ -313,12 +387,17 @@ function saveModelEdit(id) {
 }
 
 function addCriterion() {
-  const inp = document.getElementById('cfg-eval-criteria-add');
-  const val = inp.value.trim();
+  const nameInp = document.getElementById('cfg-eval-criteria-name');
+  const descInp = document.getElementById('cfg-eval-criteria-desc');
+  const val = nameInp.value.trim();
   if (!val) return;
   if (!configData) return;
-  configData.eval_criteria.push(val);
-  inp.value = '';
+  configData.eval_criteria.push({
+    name: val,
+    description: descInp.value.trim(),
+  });
+  nameInp.value = '';
+  descInp.value = '';
   renderCriteria(configData.eval_criteria);
 }
 
@@ -339,13 +418,6 @@ function saveConfig() {
       model_id: configData.eval.model_id,
     },
     eval_criteria: configData.eval_criteria,
-    eval_prompt_template: document.getElementById('cfg-eval-prompt').value,
-    models: configData.models.map(m => ({
-      id: m.id,
-      name: m.name,
-      model_id: m.model_id,
-      base_url: m.base_url || null,
-    })),
   };
 
   const evalKey = document.getElementById('cfg-eval-api-key').value.trim();
@@ -367,6 +439,50 @@ function saveConfig() {
 
 // ── Run tab ────────────────────────────────────────────────
 let pollBenchmarkInterval = null;
+let questionBoxCounter = 0;
+
+function addQuestionBox(prepend) {
+  questionBoxCounter++;
+  const container = document.getElementById('run-questions-container');
+  const box = document.createElement('div');
+  box.className = 'question-box';
+  box.id = 'qbox-' + questionBoxCounter;
+  box.innerHTML = `
+    <div class="question-box-header">
+      <span>Question ${questionBoxCounter}</span>
+      <button class="sm danger" onclick="removeQuestionBox('qbox-${questionBoxCounter}')">&times; Remove</button>
+    </div>
+    <textarea placeholder="Paste a prompt or question here..."></textarea>
+  `;
+  if (prepend && container.children.length > 0) {
+    container.prepend(box);
+  } else {
+    container.appendChild(box);
+  }
+}
+
+function removeQuestionBox(id) {
+  const el = document.getElementById(id);
+  if (el) el.remove();
+  reindexQuestions();
+}
+
+function reindexQuestions() {
+  const boxes = document.querySelectorAll('#run-questions-container .question-box');
+  boxes.forEach((box, i) => {
+    box.querySelector('.question-box-header span').textContent = 'Question ' + (i + 1);
+  });
+}
+
+function getQuestions() {
+  const boxes = document.querySelectorAll('#run-questions-container .question-box textarea');
+  const questions = [];
+  boxes.forEach(tb => {
+    const val = tb.value.trim();
+    if (val) questions.push(val);
+  });
+  return questions;
+}
 
 function updateRunModelSelect(models) {
   const el = document.getElementById('run-models-select');
@@ -380,7 +496,7 @@ function updateRunModelSelect(models) {
 }
 
 function startBenchmark() {
-  const questions = document.getElementById('run-questions').value.trim().split('\n').filter(l => l.trim());
+  const questions = getQuestions();
   if (!questions.length) { alert('Enter at least one question.'); return; }
 
   const outputDir = document.getElementById('run-output-dir').value.trim();
@@ -767,6 +883,7 @@ function showGraph() {
 // ── Init ───────────────────────────────────────────────────
 loadConfig();
 loadResults();
+addQuestionBox();
 </script>
 </body>
 </html>

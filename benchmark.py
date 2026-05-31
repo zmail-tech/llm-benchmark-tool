@@ -599,7 +599,20 @@ def run_evaluation(
     return evaluations
 
 
-EVAL_CRITERIA = ["Accuracy", "Completeness", "Clarity", "Reasoning", "Speed", "Refusal", "Overall"]
+EVAL_CRITERIA = [
+    {"name": "Accuracy", "description": "How factually correct is the answer? Are there any inaccuracies or errors?"},
+    {"name": "Completeness", "description": "Does the answer address all aspects of the question? Is anything missing?"},
+    {"name": "Clarity", "description": "Is the answer well-organized, easy to follow, and clearly written?"},
+    {"name": "Reasoning", "description": "If the question requires reasoning, is the logic sound and well-explained?"},
+    {"name": "Speed", "description": "Considering the response metrics, was the answer delivered at an acceptable pace?"},
+    {"name": "Refusal", "description": "Did the model refuse to answer? 10 = answered fully, 1 = completely refused."},
+    {"name": "Overall", "description": "Final composite assessment of the answer quality."},
+]
+
+
+def _crit_name(c):
+    """Extract criterion name from a dict {name, ...} or plain string."""
+    return c.get("name", c) if isinstance(c, dict) else str(c)
 
 def parse_eval_scores(evaluation_text: str, criteria: list[str] | None = None) -> dict[str, float] | None:
     """Extract numeric scores for each evaluation criterion from evaluation text.
@@ -613,13 +626,15 @@ def parse_eval_scores(evaluation_text: str, criteria: list[str] | None = None) -
     crits = criteria or EVAL_CRITERIA
     scores: dict[str, float] = {}
     for criterion in crits:
+        name = _crit_name(criterion)
+        escaped = re.escape(name)
         match = re.search(
-            rf'(?:[-•]\s*|\s|^)\**{criterion}:\s*(\d+\.?\d*?)(?:/\d+)?\**',
+            rf'(?:[-•]\s*|\s|^)\**{escaped}:\s*(\d+\.?\d*?)(?:/\d+)?\**',
             evaluation_text,
         )
         if match:
             try:
-                scores[criterion] = float(match.group(1))
+                scores[name] = float(match.group(1))
             except ValueError:
                 pass
 
@@ -636,7 +651,7 @@ def _html_escape(text: str) -> str:
     )
 
 def generate_comparison_graph(eval_dir: str = None, output_path: str = None,
-                              conn=None, run_ids=None) -> dict:
+                               conn=None, run_ids=None) -> dict:
     """Generate an HTML comparison chart from evaluation data.
 
     If conn is provided and eval_dir is None, reads from DB.
@@ -655,6 +670,8 @@ def generate_comparison_graph(eval_dir: str = None, output_path: str = None,
     except Exception:
         criteria = EVAL_CRITERIA
 
+    crit_names = [_crit_name(c) for c in criteria]
+
     model_data: dict[str, list[tuple[dict[str, float], str]]] = {}
 
     if conn and eval_dir is None:
@@ -665,7 +682,6 @@ def generate_comparison_graph(eval_dir: str = None, output_path: str = None,
         for run in runs:
             evals_by_model = dbmod.get_evaluations_grouped_by_model(conn, run["id"])
             for model_name, evals in evals_by_model.items():
-                # Use "RunName - Model" as the label when run_ids are specified
                 label = run["name"] + " - " + model_name if run_ids else model_name
                 for ev in evals:
                     eval_text = ev.get("evaluation", "")
@@ -712,12 +728,12 @@ def generate_comparison_graph(eval_dir: str = None, output_path: str = None,
     model_averages: dict[str, dict[str, float]] = {}
     for mname in model_names:
         entries = model_data[mname]
-        totals: dict[str, list[float]] = {c: [] for c in criteria}
+        totals: dict[str, list[float]] = {n: [] for n in crit_names}
         for scores, _ in entries:
-            for c in criteria:
-                if c in scores:
-                    totals[c].append(scores[c])
-        model_averages[mname] = {c: (sum(v) / len(v)) if v else 0 for c, v in totals.items()}
+            for n in crit_names:
+                if n in scores:
+                    totals[n].append(scores[n])
+        model_averages[mname] = {n: (sum(v) / len(v)) if v else 0 for n, v in totals.items()}
 
     # Build Chart.js datasets
     COLORS = [
@@ -726,10 +742,11 @@ def generate_comparison_graph(eval_dir: str = None, output_path: str = None,
         "#9c755f", "#bab0ac", "#8c564b", "#c44e52",
     ]
 
+    label_names_json = [f"'{_html_escape(n)}'" for n in crit_names]
     datasets_json: list[str] = []
     for idx, mname in enumerate(model_names):
         color = COLORS[idx % len(COLORS)]
-        values = [model_averages[mname].get(c, 0) for c in criteria]
+        values = [model_averages[mname].get(n, 0) for n in crit_names]
         datasets_json.append(
             f"{{ label: {_html_escape(mname)}, backgroundColor: '{color}', "
             f"data: {values} }}"
@@ -750,15 +767,15 @@ def generate_comparison_graph(eval_dir: str = None, output_path: str = None,
         )
         details_html.append("<tr>")
         details_html.append("<th>Question</th>")
-        for c in criteria:
-            details_html.append(f"<th>{c}</th>")
+        for n in crit_names:
+            details_html.append(f"<th>{_html_escape(n)}</th>")
         details_html.append("</tr>")
 
         for scores, question in entries:
             details_html.append("<tr>")
             details_html.append(f"<td>{_html_escape(question[:100])}</td>")
-            for c in criteria:
-                val = scores.get(c, "—")
+            for n in crit_names:
+                val = scores.get(n, "—")
                 details_html.append(f"<td>{val}</td>")
             details_html.append("</tr>")
 
@@ -766,6 +783,13 @@ def generate_comparison_graph(eval_dir: str = None, output_path: str = None,
 
     # Generate HTML
     graph_source = "DB" if (conn and eval_dir is None) else _html_escape(eval_dir or "")
+    avg_table_rows = "".join(
+        f"<tr><td>{_html_escape(m)}</td>" +
+        "".join(f"<td>{model_averages[m].get(n, 0):.1f}</td>" for n in crit_names) +
+        "</tr>"
+        for m in model_names
+    )
+    avg_table_headers = "".join(f"<th>{_html_escape(n)}</th>" for n in crit_names)
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -787,13 +811,8 @@ def generate_comparison_graph(eval_dir: str = None, output_path: str = None,
 <h2>Average Scores by Model</h2>
 <table border="1" cellpadding="4" cellspacing="0"
        style="border-collapse:collapse;">
-<tr><th>Model</th>{"".join(f"<th>{c}</th>" for c in criteria)}</tr>
-{"".join(
-    f"<tr><td>{_html_escape(m)}</td>" +
-    "".join(f"<td>{model_averages[m].get(c, 0):.1f}</td>" for c in criteria) +
-    "</tr>"
-    for m in model_names
-)}
+<tr><th>Model</th>{avg_table_headers}</tr>
+{avg_table_rows}
 </table>
 <h2>Per-Question Breakdown</h2>
 {"".join(details_html)}
@@ -802,7 +821,7 @@ const ctx = document.getElementById("chart").getContext("2d");
 new Chart(ctx, {{
   type: "bar",
   data: {{
-    labels: {criteria},
+    labels: [{", ".join(label_names_json)}],
     datasets: [{"".join(datasets_json)}],
   }},
   options: {{
@@ -943,13 +962,13 @@ def main():
         print("EVAL SCORE COMPARISON")
         print(f"{'='*60}")
 
-        # Print summary table
-        header = f"  {'Model':<25}" + "".join(f"{c:>8}" for c in EVAL_CRITERIA)
+        crit_display_names = [_crit_name(c) for c in EVAL_CRITERIA]
+        header = f"  {'Model':<25}" + "".join(f"{n:>8}" for n in crit_display_names)
         print(header)
-        print("  " + "-" * (25 + 8 * len(EVAL_CRITERIA)))
+        print("  " + "-" * (25 + 8 * len(crit_display_names)))
         for mname in res["model_names"]:
             row = f"  {_html_escape(mname):<25}" + "".join(
-                f"{model_avgs[mname].get(c, 0):>8.1f}" for c in EVAL_CRITERIA
+                f"{model_avgs[mname].get(n, 0):>8.1f}" for n in crit_display_names
             )
             print(row)
 

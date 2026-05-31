@@ -141,7 +141,10 @@ def _run_evaluation_bg(run_ids=None):
         eval_prompt_template = dbmod.get_setting(conn, "eval_prompt_template") or ""
 
         if not eval_prompt_template:
-            eval_prompt_template = dbmod.DEFAULT_EVAL_PROMPT
+            # Auto-generate from criteria stored in DB
+            criteria_json = dbmod.get_setting(conn, "eval_criteria")
+            criteria = json.loads(criteria_json) if criteria_json else bm.EVAL_CRITERIA
+            eval_prompt_template = dbmod.generate_eval_prompt_template(criteria)
 
         eval_model = {
             "name": eval_model_id,
@@ -271,8 +274,10 @@ def update_config():
         if "eval_criteria" in data:
             dbmod.set_setting(conn, "eval_criteria", json.dumps(data["eval_criteria"]))
 
-        if "eval_prompt_template" in data:
-            dbmod.set_setting(conn, "eval_prompt_template", data["eval_prompt_template"])
+        # Auto-generate prompt template from criteria (overrides manual edits)
+        criteria_for_prompt = data.get("eval_criteria", [])
+        generated_prompt = dbmod.generate_eval_prompt_template(criteria_for_prompt)
+        dbmod.set_setting(conn, "eval_prompt_template", generated_prompt)
 
         # Handle model list changes
         if "models" in data:
