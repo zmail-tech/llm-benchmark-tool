@@ -155,7 +155,10 @@ details summary{cursor:pointer;font-weight:600;padding:8px 0}
 <div class="content" id="tab-evaluation" style="display:none">
   <div class="card">
     <h2>Evaluate Results</h2>
-    <p class="text-sm mb8">Runs evaluation on all saved benchmark results using the configured evaluation model.</p>
+    <div id="eval-run-select" class="mt16">
+      <div class="text-sm" style="margin-bottom:8px;font-weight:600;">Select a run:</div>
+      <div id="eval-run-list"></div>
+    </div>
     <div id="eval-status"></div>
     <button id="eval-btn" onclick="startEvaluation()">Start Evaluation</button>
   </div>
@@ -170,7 +173,7 @@ details summary{cursor:pointer;font-weight:600;padding:8px 0}
   <div class="card">
     <h2>Comparison Graph</h2>
     <div id="graph-run-select" class="mt16">
-      <div class="text-sm" style="margin-bottom:8px;font-weight:600;">Select runs to compare (models shown as "Run - Model"):</div>
+      <div class="text-sm" style="margin-bottom:8px;font-weight:600;">Select a run to compare (models shown as "Run - Model"):</div>
       <div id="graph-run-list"></div>
     </div>
     <button id="graph-gen-btn" onclick="generateGraph()">Generate Graph</button>
@@ -187,6 +190,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   t.classList.add('active');
   document.getElementById('tab-' + t.dataset.tab).style.display = '';
   if (t.dataset.tab === 'graph') loadGraphRuns();
+  else if (t.dataset.tab === 'evaluation') loadEvalRuns();
 }));
 
 // ── Configure tab ──────────────────────────────────────────
@@ -531,50 +535,67 @@ function exportRun(runId, name) {
 
 // ── Evaluation tab ─────────────────────────────────────────
 let pollEvalInterval = null;
+let evalRunsLoaded = false;
+let selectedEvalRunId = null;
 
-function startEvaluation() {
-  const btn = document.getElementById('eval-btn');
-  btn.disabled = true;
+function loadEvalRuns() {
+  if (evalRunsLoaded) return;
+  evalRunsLoaded = true;
 
-  fetch('/api/evaluation/run', { method: 'POST', headers: { 'Content-Type': 'application/json' } }).then(r => r.json()).then(() => {
-    pollEvalStatus();
-  });
-}
-
-function pollEvalStatus() {
-  if (pollEvalInterval) clearInterval(pollEvalInterval);
-  pollEvalInterval = setInterval(() => {
-    fetch('/api/evaluation/status').then(r => r.json()).then(s => {
-      const el = document.getElementById('eval-status');
-      if (s.running) {
-        const pct = s.progress ? s.progress.percent : 0;
-        const cur = s.progress ? s.progress.current : 0;
-        const tot = s.progress ? s.progress.total : 0;
-        el.innerHTML = '<div class="status running">Evaluating… ' + cur + '/' + tot + ' (' + pct + '%)</div><div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%"></div></div>';
-      } else if (s.error) {
-        el.innerHTML = '<div class="status error">Error: ' + s.error + '</div>';
-        document.getElementById('eval-btn').disabled = false;
-        clearInterval(pollEvalInterval);
-      } else {
-        el.innerHTML = '<div class="status ok">Evaluation complete.</div>';
-        document.getElementById('eval-btn').disabled = false;
-        clearInterval(pollEvalInterval);
-        loadEvalResults();
+  fetch('/api/results')
+    .then(r => r.json())
+    .then(data => {
+      const list = document.getElementById('eval-run-list');
+      list.innerHTML = '';
+      const runs = data.runs.filter(run => run.status === 'completed' || run.status === 'error');
+      if (!runs.length) {
+        list.innerHTML = '<div class="text-sm" style="color:#999;">No completed runs available.</div>';
+        return;
       }
+      runs.forEach(run => {
+        const label = document.createElement('label');
+        label.className = 'text-sm';
+        label.style.display = 'block';
+        label.style.marginBottom = '6px';
+        label.style.cursor = 'pointer';
+        label.innerHTML =
+          '<input type="radio" name="eval-run" value="' + run.id + '" onchange="onEvalRunSelect(' + run.id + ')"> ' +
+          '<strong>' + run.name + '</strong> &mdash; ' +
+          (run.model_count || '?') + ' model(s), ' +
+          (run.question_count || '?') + ' question(s)';
+        list.appendChild(label);
+      });
+    })
+    .catch(err => {
+      document.getElementById('eval-run-list').innerHTML =
+        '<div class="text-sm" style="color:#e15759;">Failed to load runs: ' + err.message + '</div>';
     });
-  }, 1500);
 }
 
-function loadEvalResults() {
-  fetch('/api/results').then(r => r.json()).then(data => {
-    const el = document.getElementById('eval-results');
-    el.innerHTML = '<div class="text-sm">Loading eval results…</div>';
+function onEvalRunSelect(runId) {
+  selectedEvalRunId = runId;
+  loadEvalResultsForRun(runId);
+}
 
-    data.runs.forEach(run => {
-      if (!run.summaries || !run.summaries.length) return;
+function loadEvalResultsForRun(runId) {
+  const el = document.getElementById('eval-results');
+  el.innerHTML = '<div class="text-sm">Loading…</div>';
+
+  fetch('/api/results')
+    .then(r => r.json())
+    .then(data => {
+      const run = data.runs.find(rn => rn.id === runId);
+      if (!run || !run.summaries || !run.summaries.length) {
+        el.innerHTML = '<div class="text-sm">No results found for this run.</div>';
+        return;
+      }
+
+      let promises = [];
+      el.innerHTML = '';
+
       run.summaries.forEach(sum => {
         const modelName = sum.model_name || sum.model_id;
-        fetch('/api/evaluation/results/' + run.id + '/' + encodeURIComponent(modelName))
+        const p = fetch('/api/evaluation/results/' + runId + '/' + encodeURIComponent(modelName))
           .then(r => { if (!r.ok) return null; return r.json(); })
           .then(summary => {
             if (!summary) return;
@@ -606,9 +627,59 @@ function loadEvalResults() {
             html += '</div></details>';
             el.innerHTML = html + el.innerHTML;
           }).catch(() => {});
+        promises.push(p);
+      });
+
+      Promise.all(promises).then(() => {
+        if (!el.innerHTML) el.innerHTML = '<div class="text-sm">No evaluation results found. Run an evaluation first.</div>';
       });
     });
+}
+
+function startEvaluation() {
+  const btn = document.getElementById('eval-btn');
+  const radios = document.querySelector('input[name="eval-run"]:checked');
+
+  if (!radios) {
+    document.getElementById('eval-status').innerHTML = '<div class="status error">Please select a run.</div>';
+    return;
+  }
+
+  selectedEvalRunId = parseInt(radios.value);
+  btn.disabled = true;
+  document.getElementById('eval-status').innerHTML = '';
+
+  fetch('/api/evaluation/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ run_ids: [parseInt(radios.value)] })
+  }).then(r => r.json()).then(() => {
+    pollEvalStatus();
   });
+}
+
+function pollEvalStatus() {
+  if (pollEvalInterval) clearInterval(pollEvalInterval);
+  pollEvalInterval = setInterval(() => {
+    fetch('/api/evaluation/status').then(r => r.json()).then(s => {
+      const el = document.getElementById('eval-status');
+      if (s.running) {
+        const pct = s.progress ? s.progress.percent : 0;
+        const cur = s.progress ? s.progress.current : 0;
+        const tot = s.progress ? s.progress.total : 0;
+        el.innerHTML = '<div class="status running">Evaluating… ' + cur + '/' + tot + ' (' + pct + '%)</div><div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%"></div></div>';
+      } else if (s.error) {
+        el.innerHTML = '<div class="status error">Error: ' + s.error + '</div>';
+        document.getElementById('eval-btn').disabled = false;
+        clearInterval(pollEvalInterval);
+      } else {
+        el.innerHTML = '<div class="status ok">Evaluation complete.</div>';
+        document.getElementById('eval-btn').disabled = false;
+        clearInterval(pollEvalInterval);
+        loadEvalResultsForRun(selectedEvalRunId);
+      }
+    });
+  }, 1500);
 }
 
 // ── Graph tab ──────────────────────────────────────────────
@@ -635,7 +706,7 @@ function loadGraphRuns() {
         label.style.marginBottom = '6px';
         label.style.cursor = 'pointer';
         label.innerHTML =
-          '<input type="checkbox" value="' + run.id + '" class="graph-run-cb"> ' +
+          '<input type="radio" name="graph-run" value="' + run.id + '"> ' +
           '<strong>' + run.name + '</strong> &mdash; ' +
           (run.model_count || '?') + ' model(s), ' +
           (run.question_count || '?') + ' question(s)';
@@ -652,16 +723,16 @@ function generateGraph() {
   const btn = document.getElementById('graph-gen-btn');
   const status = document.getElementById('graph-status');
 
-  // Collect selected run ids
-  const checkboxes = document.querySelectorAll('.graph-run-cb:checked');
-  const runIds = Array.from(checkboxes).map(cb => parseInt(cb.value));
-  if (!runIds.length) {
-    status.innerHTML = '<div class="status error">Please select at least one run.</div>';
+  const radio = document.querySelector('input[name="graph-run"]:checked');
+  if (!radio) {
+    status.innerHTML = '<div class="status error">Please select a run.</div>';
     return;
   }
 
+  const runIds = [parseInt(radio.value)];
+
   btn.disabled = true;
-  status.innerHTML = '<div class="status running">Generating graph for ' + runIds.length + ' run(s)…</div>';
+  status.innerHTML = '<div class="status running">Generating graph…</div>';
 
   fetch('/api/graph/generate', {
     method: 'POST',
@@ -679,7 +750,7 @@ function generateGraph() {
       return;
     }
     const modelCount = Object.keys(d.model_averages || {}).length;
-    status.innerHTML = '<div class="status ok">Graph generated — ' + modelCount + ' model(s) included.</div>';
+    status.innerHTML = '<div class="status ok">Graph generated — ' + modelCount + ' model(s).</div>';
     return showGraph();
   })
   .then(() => {

@@ -132,7 +132,7 @@ def _run_benchmark_bg(output_dir, questions, model_names):
         conn.close()
 
 
-def _run_evaluation_bg():
+def _run_evaluation_bg(run_ids=None):
     """Background thread for evaluation runs."""
     _state["evaluation"]["running"] = True
     _state["evaluation"]["error"] = None
@@ -157,6 +157,8 @@ def _run_evaluation_bg():
 
         # Collect all runs and their results
         runs = dbmod.get_runs(conn)
+        if run_ids:
+            runs = [r for r in runs if r["id"] in run_ids]
         total_results = 0
         for run in runs:
             results = dbmod.get_results_by_run(conn, run["id"])
@@ -414,7 +416,10 @@ def start_evaluation():
     if _state["evaluation"]["running"]:
         return jsonify({"error": "Evaluation already running"}), 409
 
-    t = threading.Thread(target=_run_evaluation_bg, daemon=True)
+    data = request.get_json() or {}
+    run_ids = data.get("run_ids")
+
+    t = threading.Thread(target=_run_evaluation_bg, args=(run_ids,), daemon=True)
     t.start()
 
     return jsonify({"ok": True})
