@@ -444,16 +444,20 @@ def generate_graph():
     """Generate a comparison graph from eval results."""
     data = request.get_json() or {}
 
+    run_ids = data.get("run_ids")
+    if not run_ids:
+        return jsonify({"error": "No run_ids provided. Please select at least one run."}), 400
+
     conn = dbmod.get_db()
     try:
         output_path = data.get("output_path", os.path.join(_RESULTS_DIR, "eval", "comparison-graph.html"))
-        result = bm.generate_comparison_graph(conn=conn, output_path=output_path)
+        result = bm.generate_comparison_graph(conn=conn, output_path=output_path, run_ids=run_ids)
         return jsonify({
             "model_averages": result.get("model_averages", {}),
             "output": result.get("output", ""),
         })
     except SystemExit:
-        return jsonify({"error": "No eval data found for graph generation"}), 400
+        return jsonify({"error": "No eval data found for selected runs"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:

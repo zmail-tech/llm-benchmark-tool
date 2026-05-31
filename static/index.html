@@ -169,6 +169,10 @@ details summary{cursor:pointer;font-weight:600;padding:8px 0}
 <div class="content" id="tab-graph" style="display:none">
   <div class="card">
     <h2>Comparison Graph</h2>
+    <div id="graph-run-select" class="mt16">
+      <div class="text-sm" style="margin-bottom:8px;font-weight:600;">Select runs to compare (models shown as "Run - Model"):</div>
+      <div id="graph-run-list"></div>
+    </div>
     <button id="graph-gen-btn" onclick="generateGraph()">Generate Graph</button>
     <div id="graph-status" class="mt16"></div>
     <iframe id="graph-frame" style="width:100%;height:600px;border:none;display:none;border-radius:8px;margin-top:16px"></iframe>
@@ -182,6 +186,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   document.querySelectorAll('[id^="tab-"]').forEach(x => x.style.display = 'none');
   t.classList.add('active');
   document.getElementById('tab-' + t.dataset.tab).style.display = '';
+  if (t.dataset.tab === 'graph') loadGraphRuns();
 }));
 
 // ── Configure tab ──────────────────────────────────────────
@@ -607,32 +612,103 @@ function loadEvalResults() {
 }
 
 // ── Graph tab ──────────────────────────────────────────────
+let graphRunsLoaded = false;
+
+function loadGraphRuns() {
+  if (graphRunsLoaded) return;
+  graphRunsLoaded = true;
+
+  fetch('/api/results')
+    .then(r => r.json())
+    .then(data => {
+      const list = document.getElementById('graph-run-list');
+      list.innerHTML = '';
+      const runs = data.runs.filter(run => run.status === 'completed' || run.status === 'error');
+      if (!runs.length) {
+        list.innerHTML = '<div class="text-sm" style="color:#999;">No completed runs available.</div>';
+        return;
+      }
+      runs.forEach(run => {
+        const label = document.createElement('label');
+        label.className = 'text-sm';
+        label.style.display = 'block';
+        label.style.marginBottom = '6px';
+        label.style.cursor = 'pointer';
+        label.innerHTML =
+          '<input type="checkbox" value="' + run.id + '" class="graph-run-cb"> ' +
+          '<strong>' + run.name + '</strong> &mdash; ' +
+          (run.model_count || '?') + ' model(s), ' +
+          (run.question_count || '?') + ' question(s)';
+        list.appendChild(label);
+      });
+    })
+    .catch(err => {
+      document.getElementById('graph-run-list').innerHTML =
+        '<div class="text-sm" style="color:#e15759;">Failed to load runs: ' + err.message + '</div>';
+    });
+}
+
 function generateGraph() {
   const btn = document.getElementById('graph-gen-btn');
-  btn.disabled = true;
+  const status = document.getElementById('graph-status');
 
-  fetch('/api/graph/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' } }).then(r => r.json()).then(d => {
-    const status = document.getElementById('graph-status');
+  // Collect selected run ids
+  const checkboxes = document.querySelectorAll('.graph-run-cb:checked');
+  const runIds = Array.from(checkboxes).map(cb => parseInt(cb.value));
+  if (!runIds.length) {
+    status.innerHTML = '<div class="status error">Please select at least one run.</div>';
+    return;
+  }
+
+  btn.disabled = true;
+  status.innerHTML = '<div class="status running">Generating graph for ' + runIds.length + ' run(s)…</div>';
+
+  fetch('/api/graph/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ run_ids: runIds })
+  })
+  .then(r => {
+    if (!r.ok) return r.json().then(d => { throw new Error(d.error || 'Server returned ' + r.status); });
+    return r.json();
+  })
+  .then(d => {
     if (d.error) {
-      status.innerHTML = '<div class="status error">' + d.error + '</div>';
+      status.innerHTML = '<div class="status error">Error: ' + d.error + '</div>';
       btn.disabled = false;
       return;
     }
-    status.innerHTML = '<div class="status ok">Graph generated: ' + d.output + '</div>';
-    showGraph();
+    const modelCount = Object.keys(d.model_averages || {}).length;
+    status.innerHTML = '<div class="status ok">Graph generated — ' + modelCount + ' model(s) included.</div>';
+    return showGraph();
+  })
+  .then(() => {
     btn.disabled = false;
+  })
+  .catch(err => {
+    status.innerHTML = '<div class="status error">Failed: ' + err.message + '</div>';
+    btn.disabled = false;
+    console.error('graph generate error:', err);
   });
 }
 
 function showGraph() {
-  fetch('/api/graph').then(r => {
-    if (!r.ok) return;
-    return r.text();
-  }).then(html => {
-    const iframe = document.getElementById('graph-frame');
-    iframe.srcdoc = html;
-    iframe.style.display = 'block';
-  });
+  return fetch('/api/graph')
+    .then(r => {
+      if (!r.ok) throw new Error('Could not load graph (HTTP ' + r.status + ')');
+      return r.text();
+    })
+    .then(html => {
+      const iframe = document.getElementById('graph-frame');
+      if (!html || html.length < 50) throw new Error('Empty graph response from server');
+      iframe.srcdoc = html;
+      iframe.style.display = 'block';
+    })
+    .catch(err => {
+      const status = document.getElementById('graph-status');
+      status.innerHTML = '<div class="status error">Failed to load graph: ' + err.message + '</div>';
+      console.error('showGraph error:', err);
+    });
 }
 
 // ── Init ───────────────────────────────────────────────────

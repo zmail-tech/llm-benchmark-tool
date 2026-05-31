@@ -1,35 +1,89 @@
 # LLM Benchmark Tool
 
-A Python script for benchmarking local LLMs running on OpenAI-compatible endpoints. Sends a series of questions, captures responses, and records detailed performance metrics. Supports testing multiple models in a single run with a cross-model comparison.
+A web application for benchmarking local LLMs running on OpenAI-compatible endpoints. Configure models, run benchmarks, evaluate results with a judge model, and visualize comparisons — all through a browser-based UI backed by a SQLite database. Also supports traditional CLI usage for scripting and automation.
 
 ## Features
 
-- **Multi-model benchmarking** — test multiple models back-to-back and get a ranked comparison
+- **Web UI** — single-page application with tabs for configuration, benchmarking, results, evaluation, and graph visualization
+- **Multi-model benchmarking** — test multiple models back-to-back in a single run with per-question metrics
 - **Evaluation mode** — evaluate saved benchmark results with a separate eval model and a customizable scoring prompt
-- **HTML comparison graph** — generate an interactive Chart.js bar chart from eval results, with per-model averages and per-question breakdowns
-- Per-question metrics: duration, prompt/response tokens per second, thinking tokens, response tokens, and completion tokens
-- Each question/response saved as a separate JSON file per model
-- Aggregate summary per model + cross-model comparison file
-- Configure models, endpoints, and API keys in `config.ini` (or override with CLI flags)
-- Load questions from plain text (one per line), JSON, or JSONL files
-
-## Installation
-
-```bash
-pip install -r requirements.txt
-```
-
-Requires Python 3.9+.
+- **Interactive comparison graphs** — Chart.js bar charts with per-model averages and per-question breakdowns, with run selection for cross-run comparison
+- **SQLite persistence** — all runs, results, evaluations, and settings stored in a single database file with automatic migration from legacy file-based results
+- **Per-question metrics** — duration, prompt/response/completion/thinking tokens, and tokens per second
+- **Cross-model comparison** — ranked performance comparison across all models in a run
+- **Model inheritance** — models inherit endpoint URL and API key from global defaults but can override individually
+- **Configure everything in-browser** — connection settings, model list, eval model, eval criteria, and prompt template
+- **CLI interface** — traditional command-line usage for scripting and automation
 
 ## Quick Start
 
-1. Copy `config.ini.example` to `config.ini` and fill in your settings:
+```bash
+pip install -r requirements.txt
+python server.py
+```
+
+Then open http://localhost:5000 in your browser.
+
+Requires Python 3.9+.
+
+## Web UI
+
+The web application provides five tabs:
+
+### Configure
+
+Set up all project settings:
+
+- **Connection Settings** — default LLM endpoint URL, model ID, and API key
+- **Models to Test** — add, edit, and delete models with individual overrides for URL and API key
+- **Evaluation Settings** — eval endpoint, eval model ID, eval API key, scoring criteria, and eval prompt template
+
+### Run
+
+Start a benchmark:
+
+- Enter questions (one per line)
+- Optionally name the run (auto-generated timestamp if left blank)
+- Select which models to test (all selected by default)
+- Progress bar updates in real time during the run
+
+### Results
+
+View and manage past runs:
+
+- Status badges (Completed, Running, Error)
+- Per-run model rankings by response tokens/second
+- Per-model aggregate metrics (duration, tokens, TPS)
+- Expandable question-level detail with individual Q&A pairs
+- Export runs as JSON or delete them
+
+### Evaluation
+
+Run and view evaluations:
+
+- Execute evaluation across all saved benchmark results using the configured eval model
+- Progress bar updates in real time
+- Per-model evaluation summaries with averaged criterion scores
+- Expandable individual evaluation details per question
+
+### Graph
+
+Generate comparison charts:
+
+- Select one or more runs to include (models labeled as "RunName - Model" for cross-run distinction)
+- Generates an interactive Chart.js grouped bar chart embedded in an iframe
+- Average scores table sorted by model
+- Collapsible per-question breakdown tables
+
+## Configuration (CLI)
+
+Copy `config.ini.example` to `config.ini` and fill in your settings:
 
 ```bash
 cp config.ini.example config.ini
 ```
 
-2. Edit `config.ini` with your LLM endpoint settings and model list:
+On first launch, the web UI auto-migrates settings from `config.ini` into the SQLite database (`benchmark.db`). After migration, all configuration is managed through the web UI.
 
 ```ini
 [llm]
@@ -44,45 +98,12 @@ model-id = ModelA
 
 [model.ModelB]
 model-id = ModelB
-```
-
-3. Add questions to `questions.txt` (one per line).
-
-4. Run:
-
-```bash
-python benchmark.py -q questions.txt
-```
-
-## Configuring Multiple Models
-
-Add a `[models]` section with a `list` of model names (comma-separated), then define each model in a `[model.<name>]` section. Models inherit the URL and API key from the `[llm]` section by default but can override them individually.
-
-```ini
-[llm]
-url = http://192.168.1.210:8000/v1
-api-key = your-api-key
-
-[models]
-list = Qwen-Lite-Deepseek, DeepSeek-R1
-
-[model.Qwen-Lite-Deepseek]
-model-id = Qwen-Lite-Deepseek
-
-[model.DeepSeek-R1]
-model-id = DeepSeek-R1
 url = http://192.168.1.210:8001/v1
 ```
 
 If no `[models]` section is found, the tool falls back to a single model from the `[llm]` section's `model-id`.
 
-## Evaluating Results
-
-After running a benchmark, you can evaluate the saved results using a separate evaluation model. This is useful for quality assessment of model responses using a stronger model as a judge.
-
-### Configuring the Eval Model
-
-Add an `[eval]` section to `config.ini` with the eval model's endpoint and model ID:
+### Evaluation Model Configuration
 
 ```ini
 [eval]
@@ -93,137 +114,14 @@ model-id = qwen3-32b
 
 ### Evaluation Prompt Template
 
-The eval prompt is stored in `eval-prompt.txt` and uses `{question}` and `{answer}` placeholders that are replaced with the actual content from each result file. The template also receives response metrics (duration, response tokens, tokens/second) to support speed evaluation.
-
-The default template scores on five dimensions: Accuracy, Completeness, Clarity, Reasoning, and Speed (each 1-10), plus an overall score.
-
-You can create custom evaluation prompts for different tasks. For example, a code-focused eval prompt might score on correctness, style, and efficiency.
-
-```text
-Evaluate the following code answer. Use {question} and {answer} placeholders.
-
-**Question:**
-{question}
-
-**Answer:**
-{answer}
-
-Score: Correctness (1-10), Style (1-10), Efficiency (1-10)
-```
-
-Use `--eval-prompt` to specify a custom template file.
-
-### Running Evaluation
-
-```bash
-# Evaluate saved results using default settings
-python benchmark.py --eval
-
-# Evaluate with a custom prompt template
-python benchmark.py --eval --eval-prompt code-eval-prompt.txt
-
-# Evaluate results from a specific directory
-python benchmark.py --eval --eval-dir my_results/
-```
-
-The eval process reads all result JSON files from the target directory, populates the eval prompt template, sends it to the eval model, and writes results to a subdirectory named `eval/` inside the results folder.
-
-### Eval Output
-
-Each evaluation is saved as an individual JSON file, plus an `eval-summary.json` with all assessments aggregated:
-
-```
-results/
-  eval/
-    eval_q001_Whats_a_good_simple_dinner_recipe.json
-    eval_q002_My_8_year_old_keeps_asking.json
-    eval-summary.json
-```
-
-## HTML Comparison Graph
-
-After running evaluation, generate an interactive HTML comparison chart that visualizes per-model average scores across all evaluation criteria:
-
-```bash
-# Generate graph with default output path
-python benchmark.py --graph
-
-# Generate graph with custom output path
-python benchmark.py --graph --graph-output my-graph.html
-```
-
-The graph is a self-contained HTML file using Chart.js (loaded via CDN). It includes:
-
-- **Grouped bar chart** — average scores per model across all criteria (Accuracy, Completeness, Clarity, Reasoning, Speed, Refusal, Overall)
-- **Summary table** — numeric averages for each model and criterion
-- **Collapsible per-question breakdown** — individual scores for each question, organized by model
-
-The default output path is `results/eval/comparison-graph.html`.
-
-## Usage
-
-### Single Model (CLI override)
-
-```bash
-python benchmark.py -p "What is 2+2?" -m qwen3-8b
-```
-
-### Multiple Models (from config)
-
-```bash
-python benchmark.py -q questions.txt
-```
-
-### Questions from a File
-
-```bash
-# Plain text (one question per line)
-python benchmark.py -q questions.txt
-
-# JSON array
-python benchmark.py -q questions.json
-
-# JSONL (one JSON object per line)
-python benchmark.py -q questions.jsonl
-```
-
-### Override Config with CLI Flags
-
-```bash
-python benchmark.py -p "Hello" -m other-model -u http://localhost:8080/v1
-```
-
-### Custom Config File
-
-```bash
-python benchmark.py -q questions.txt -c /path/to/other.ini
-```
-
-### Custom Output Directory
-
-```bash
-python benchmark.py -q questions.txt -o my_results
-```
-
-### Full Workflow: Benchmark, Evaluate, and Visualize
-
-```bash
-# Step 1: Run a benchmark against multiple models
-python benchmark.py -q questions.txt
-
-# Step 2: Evaluate all saved results
-python benchmark.py --eval
-
-# Step 3: Generate interactive comparison graph
-python benchmark.py --graph
-```
+The eval prompt is stored in `eval-prompt.txt` (or in the database via the web UI) and uses `{question}`, `{answer}`, `{duration}`, `{response_tokens}`, and `{response_tps}` placeholders. Default criteria are: Accuracy, Completeness, Clarity, Reasoning, Speed, Refusal, and Overall (each scored 1-10).
 
 ## CLI Reference
 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--prompt` | `-p` | A single question to ask |
-| `--questions` | `-q` | Path to a questions file |
+| `--questions` | `-q` | Path to a questions file (text, JSON, or JSONL) |
 | `--model` | `-m` | Model ID (overrides config.ini) |
 | `--base-url` | `-u` | Endpoint URL (overrides config.ini) |
 | `--api-key` | `-k` | API key (overrides config.ini) |
@@ -235,36 +133,66 @@ python benchmark.py --graph
 | `--graph` | `-g` | Generate HTML comparison graph from eval results |
 | `--graph-output` | | Output path for graph HTML (default: `results/eval/comparison-graph.html`) |
 
+### CLI Examples
+
+```bash
+# Single prompt
+python benchmark.py -p "What is 2+2?" -m qwen3-8b
+
+# Multiple questions from file
+python benchmark.py -q questions.txt
+
+# Full workflow: benchmark, evaluate, visualize
+python benchmark.py -q questions.txt
+python benchmark.py --eval
+python benchmark.py --graph
+```
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/config` | Get current configuration (API keys redacted) |
+| PUT | `/api/config` | Update configuration |
+| POST | `/api/models` | Add a new model |
+| PUT | `/api/models/<id>` | Update a model |
+| DELETE | `/api/models/<id>` | Delete a model |
+| POST | `/api/benchmark/run` | Start a benchmark run |
+| GET | `/api/benchmark/status` | Poll benchmark status and progress |
+| POST | `/api/evaluation/run` | Start evaluation across all runs |
+| GET | `/api/evaluation/status` | Poll evaluation status and progress |
+| GET | `/api/evaluation/results/<run_id>/<model>` | Get eval results for a model in a run |
+| GET | `/api/results` | List all runs with summaries |
+| GET | `/api/results/<id>/questions` | List question/result pairs for a run |
+| GET | `/api/results/<id>/export` | Export a run as JSON |
+| DELETE | `/api/results/<id>` | Delete a run and all associated data |
+| POST | `/api/graph/generate` | Generate comparison graph (body: `{ run_ids: [...] }`) |
+| GET | `/api/graph` | Fetch the generated graph HTML |
+
+## Project Structure
+
+```
+benchmark.py       Core benchmark, evaluation, and graph generation logic
+server.py          Flask API server + background run threads
+db.py              SQLite database layer (models, runs, results, evaluations, settings)
+static/index.html  Single-page React-free web UI
+requirements.txt   Python dependencies
+config.ini.example Example configuration file
+benchmark.db       SQLite database (created on first run)
+results/           Legacy file-based output (auto-migrated to DB)
+```
+
+## Database Schema
+
+- **settings** — key-value pairs for LLM, eval, and prompt configuration
+- **models** — model definitions with optional per-model URL and API key overrides
+- **runs** — benchmark runs with status, question/model counts, and timestamps
+- **results** — individual Q&A results per model per run with metrics JSON
+- **evaluations** — eval model assessments with scored feedback per question
+
 ## Output
 
-### Directory Structure
-
-Each model gets its own subdirectory under the output folder:
-
-```
-results/
-  Qwen-Lite-Deepseek/
-    q001_Whats_a_good_simple_dinner_recipe.json
-    q002_My_8_year_old_keeps_asking.json
-    summary.json
-  DeepSeek-R1/
-    q001_Whats_a_good_simple_dinner_recipe.json
-    q002_My_8_year_old_keeps_asking.json
-    summary.json
-  eval/
-    Qwen-Lite-Deepseek/
-      eval_q001_Whats_a_good_simple_dinner_recipe.json
-      eval_q002_My_8_year_old_keeps_asking.json
-      eval-summary.json
-    DeepSeek-R1/
-      eval_q001_Whats_a_good_simple_dinner_recipe.json
-      eval_q002_My_8_year_old_keeps_asking.json
-      eval-summary.json
-    comparison-graph.html
-  comparison.json
-```
-
-### Per-Question File
+### Per-Question Result Structure
 
 ```json
 {
@@ -284,17 +212,13 @@ results/
 }
 ```
 
-### Per-Model Summary
+### Comparison Graph
 
-`summary.json` inside each model's folder contains aggregate metrics: total/average duration, token counts, and average tokens per second.
+The comparison graph is a self-contained HTML file using Chart.js (loaded via CDN) with:
 
-### Cross-Model Comparison
-
-`comparison.json` at the output root contains a ranked comparison of all models tested, ordered by response tokens per second (highest first).
-
-### Eval Summary
-
-`eval-summary.json` inside the `eval/` folder contains all evaluation assessments, including the original response metrics (duration, tokens, tokens/second) and the eval model's scored feedback.
+- **Grouped bar chart** — average scores per model across all criteria
+- **Summary table** — numeric averages for each model and criterion
+- **Collapsible per-question breakdown** — individual scores for each question, organized by model
 
 ## Token Counting
 

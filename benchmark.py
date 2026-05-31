@@ -614,7 +614,7 @@ def parse_eval_scores(evaluation_text: str, criteria: list[str] | None = None) -
     scores: dict[str, float] = {}
     for criterion in crits:
         match = re.search(
-            rf'(?:[-•]\s*|\s)\**{criterion}:\s*(\d+\.?\d*)/?\d*\**',
+            rf'(?:[-•]\s*|\s|^)\**{criterion}:\s*(\d+\.?\d*?)(?:/\d+)?\**',
             evaluation_text,
         )
         if match:
@@ -636,10 +636,11 @@ def _html_escape(text: str) -> str:
     )
 
 def generate_comparison_graph(eval_dir: str = None, output_path: str = None,
-                              conn=None) -> dict:
+                              conn=None, run_ids=None) -> dict:
     """Generate an HTML comparison chart from evaluation data.
-    
+
     If conn is provided and eval_dir is None, reads from DB.
+    If run_ids is provided, only includes those runs (labels use "RunName - Model").
     Otherwise, reads eval-summary.json files from eval subdirectories.
     """
     import db as dbmod
@@ -659,17 +660,21 @@ def generate_comparison_graph(eval_dir: str = None, output_path: str = None,
     if conn and eval_dir is None:
         # Read from DB
         runs = dbmod.get_runs(conn)
+        if run_ids:
+            runs = [r for r in runs if r["id"] in run_ids]
         for run in runs:
             evals_by_model = dbmod.get_evaluations_grouped_by_model(conn, run["id"])
             for model_name, evals in evals_by_model.items():
+                # Use "RunName - Model" as the label when run_ids are specified
+                label = run["name"] + " - " + model_name if run_ids else model_name
                 for ev in evals:
                     eval_text = ev.get("evaluation", "")
                     scores = parse_eval_scores(eval_text, criteria)
                     question = ev.get("question", "Unknown")
                     if scores:
-                        model_data.setdefault(model_name, []).append((scores, question))
+                        model_data.setdefault(label, []).append((scores, question))
                     else:
-                        print(f"  Warning: could not parse scores for {model_name}: {question[:60]}")
+                        print(f"  Warning: could not parse scores for {label}: {question[:60]}")
     else:
         # Legacy file-based approach
         if not eval_dir or not os.path.isdir(eval_dir):
